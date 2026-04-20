@@ -5,7 +5,9 @@ from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
+from src.api.routes.candidates import router as candidates_router
 from src.api.routes.consolidate import router as consolidate_router
+from src.api.routes.decisions import router as decisions_router
 from src.config import settings
 from src.consolidator.neo4j import client as neo4j_client
 from src.consolidator.neo4j import migrations
@@ -24,6 +26,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="gmr-consolidator", version="0.1.0", lifespan=lifespan)
 app.include_router(consolidate_router)
+app.include_router(candidates_router)
+app.include_router(decisions_router)
 
 
 @app.get("/health")

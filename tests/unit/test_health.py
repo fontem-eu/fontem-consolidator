@@ -1,30 +1,17 @@
-from unittest.mock import AsyncMock, patch
-
-import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture
-def client():
-    with patch(
-        "src.consolidator.neo4j.client.AsyncGraphDatabase.driver"
-    ) as mock_driver, patch(
-        "src.consolidator.neo4j.migrations.apply", new=AsyncMock()
-    ):
-        mock_driver.return_value = AsyncMock()
-        from src.api.app import app
-
-        with TestClient(app) as c:
-            yield c
-
-
 def test_health(client):
-    r = client.get("/health")
+    c, _ = client
+    r = c.get("/health")
     assert r.status_code == 200
     assert r.json() == {"status": "ok"}
 
 
 def test_rules_endpoint_returns_list(client):
-    r = client.get("/rules")
+    c, _ = client
+    r = c.get("/rules")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    rules = r.json()
+    assert isinstance(rules, list)
+    assert len(rules) >= 8  # Company(5) + Authority(3)
+    names = {r["name"] for r in rules}
+    assert "exact_lei_match" in names
+    assert "exact_authority_id_match" in names
