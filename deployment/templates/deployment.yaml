@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: gmr-consolidator
+  labels:
+    app: gmr-consolidator
+spec:
+  replicas: {{ .Values.replicas | default 1 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: gmr-consolidator
+  template:
+    metadata:
+      labels:
+        app: gmr-consolidator
+        kube-monkey/enabled: enabled
+        kube-monkey/identifier: gmr-consolidator
+        kube-monkey/mtbf: "2"
+        kube-monkey/kill-mode: fixed
+        kube-monkey/kill-value: "1"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: gmr-consolidator
+          image: contribute.void42.internal/golden/gmr-consolidator:{{ .Values.version }}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          env:
+            - name: CONSOLIDATOR_AUTO_MERGE_ENABLED
+              value: "{{ .Values.autoMergeEnabled }}"
+            - name: CONSOLIDATOR_NEO4J_URI
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_URI
+            - name: CONSOLIDATOR_NEO4J_USER
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_USER
+            - name: CONSOLIDATOR_NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_PASSWORD

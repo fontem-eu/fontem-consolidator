@@ -1,0 +1,3 @@
+version: "latest"
+replicas: 1
+autoMergeEnabled: "false"

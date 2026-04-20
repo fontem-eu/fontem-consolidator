@@ -1,0 +1,56 @@
+name: CI/CD
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: python
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        env:
+          PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
+          PIP_TRUSTED_HOST: nexus.void42.internal
+        run: pip install --no-cache-dir -r requirements-dev.txt
+      - name: Unit tests
+        run: python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
+      - name: Lint
+        run: python3 -m pylint src tests --output-format=parseable --reports=no 2>&1 | tail -1 || true
+
+  build-deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Docker
+        run: curl -fsSL https://nexus.void42.internal/repository/docker-releases/linux/static/stable/x86_64/docker-27.5.1.tgz | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+      - name: Build and push image
+        run: |
+          TAG="v$(git rev-parse --short HEAD)"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login gitea-http.dev-tools.svc.cluster.local:3000 -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+          docker build --network host -t gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG .
+          docker push gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG
+      - name: Sign image with Cosign
+        env:
+          COSIGN_PASSWORD: ""
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+        run: |
+          curl -sL https://nexus.void42.internal/repository/github-releases/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          echo "$COSIGN_KEY" > /tmp/cosign.key
+          cosign sign --key /tmp/cosign.key --yes --allow-http-registry gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG
+          rm /tmp/cosign.key
+      - name: Deploy to gitops (prod — singleton)
+        run: |
+          git clone --depth=1 http://oauth2:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/golden/gitops.git /tmp/gitops
+          cd /tmp/gitops
+          sed -i 's/version: ".*"/version: "'$TAG'"/' prod/gmr-consolidator.yaml
+          git config user.name "GMR CI"
+          git config user.email "ci@void42.internal"
+          git add prod/gmr-consolidator.yaml
+          git diff --cached --quiet || git commit -m "ci: deploy gmr-consolidator $TAG"
+          git push origin main
