@@ -1,10 +1,17 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from src.config import settings
 from src.consolidator import engine
 from src.consolidator.neo4j.client import get_driver
 
 router = APIRouter()
+
+
+class BatchRequest(BaseModel):
+    entity_type: str  # "Company" | "Authority"
+    ids: list[str]
+    triggered_by: str = "batch"
 
 
 @router.post("/consolidate/company/{gmr_id}")
@@ -45,3 +52,34 @@ async def consolidate_authority(authority_id: str):
         "decisions": result.decisions,
         "rules_fired": result.rules_fired,
     }
+
+
+@router.post("/consolidate/batch")
+async def consolidate_batch(req: BatchRequest):
+    """Run consolidation against many entities in one call. Used by ETL hooks."""
+    if req.entity_type not in ("Company", "Authority"):
+        raise HTTPException(status_code=400, detail=f"unknown entity_type {req.entity_type}")
+    driver = await get_driver()
+    summary = {"processed": 0, "merged": 0, "linked": 0, "flagged": 0, "conflicts": 0}
+    run_ids: list[str] = []
+    for entity_id in req.ids:
+        result = await engine.consolidate(
+            driver,
+            settings.neo4j_database,
+            entity_type=req.entity_type,
+            entity_id=entity_id,
+            triggered_by=req.triggered_by,
+        )
+        run_ids.append(result.run_id)
+        summary["processed"] += 1
+        for d in result.decisions:
+            outcome = d.get("outcome", "")
+            if outcome == "auto_merge":
+                summary["merged"] += 1
+            elif outcome == "auto_link":
+                summary["linked"] += 1
+            elif outcome == "conflict":
+                summary["conflicts"] += 1
+            elif outcome == "flag":
+                summary["flagged"] += 1
+    return {"run_ids": run_ids, **summary}
