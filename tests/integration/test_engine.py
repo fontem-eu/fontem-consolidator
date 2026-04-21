@@ -201,6 +201,88 @@ async def test_fuzzy_rejects_parent_subsidiary(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_successor_lei_merges_and_preserves_historic(driver, monkeypatch):
+    """Active + inactive nodes with same name/country/LOU → merge into active,
+    retired LEI lands on canonical.historic_leis."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(
+        driver, gmr_id="ACTIVE",
+        name="kleiner und bold GmbH", country="DEU",
+        lei="529900ACTIVEXXXXXXX1", active=True,
+    )
+    await _create_company(
+        driver, gmr_id="RETIRED",
+        name="kleiner und bold GmbH", country="DEU",
+        lei="529900RETIREDXXXXXX2", active=False,
+    )
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="ACTIVE", triggered_by="test"
+    )
+
+    # Only the ACTIVE node survives
+    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
+    assert remaining == 1
+
+    # historic_leis has the retired LEI
+    async with driver.session() as s:
+        r = await s.run(
+            "MATCH (c:Company {gmr_id:'ACTIVE'}) RETURN c.historic_leis AS h"
+        )
+        rec = await r.single()
+    assert rec is not None
+    assert "529900RETIREDXXXXXX2" in (rec["h"] or [])
+
+    # MergeEvent carries the method + retired_lei
+    async with driver.session() as s:
+        r = await s.run(
+            "MATCH (m:MergeEvent {method:'successor_lei_match'}) "
+            "RETURN m.retired_lei AS retired"
+        )
+        rec = await r.single()
+    assert rec is not None
+    assert rec["retired"] == "529900RETIREDXXXXXX2"
+
+
+@pytest.mark.asyncio
+async def test_successor_rule_ignores_two_active_entities(driver, monkeypatch):
+    """CAISSE / sibling case: two ACTIVE nodes sharing name+country+LOU must
+    NOT be merged by the successor rule (that'd collapse legitimate siblings).
+    The existing conflict rule fires instead."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(
+        driver, gmr_id="A",
+        name="CAISSE REGLEMENTS PECUNIAIRES AVOCATS", country="FRA",
+        lei="969500SDDWXX8CRI7V10", active=True,
+    )
+    await _create_company(
+        driver, gmr_id="B",
+        name="CAISSE REGLEMENTS PECUNIAIRES AVOCATS", country="FRA",
+        lei="969500BW0ZWO0WZGB598", active=True,
+    )
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
+    )
+
+    # Both siblings survive
+    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
+    assert remaining == 2
+    # No successor merge happened
+    succ_merges = await _count(
+        driver, "MATCH (:MergeEvent {method:'successor_lei_match'}) RETURN count(*)"
+    )
+    assert succ_merges == 0
+    # The exact_name_country_match rule correctly flagged this as conflict
+    conflict = await _count(
+        driver,
+        "MATCH (:Company {gmr_id:'A'})-[r:SAME_AS]-(:Company {gmr_id:'B'}) "
+        "WHERE r.conflict = true RETURN count(r)",
+    )
+    assert conflict == 1
+
+
+@pytest.mark.asyncio
 async def test_malformed_vat_does_not_trigger_conflict(driver, monkeypatch):
     """Same (name, country), one VAT is a TED notice ID → merge proceeds (not conflict)."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)

@@ -6,6 +6,10 @@ INDEX_CYPHER = [
     "CREATE INDEX decisionlog_decided_at IF NOT EXISTS FOR (d:DecisionLog) ON (d.decided_at)",
     "CREATE INDEX decisionlog_rule IF NOT EXISTS FOR (d:DecisionLog) ON (d.rule_name)",
     "CREATE INDEX consolidationrun_started IF NOT EXISTS FOR (r:ConsolidationRun) ON (r.started_at)",
+    # historic_leis: retired/lapsed LEIs that previously identified this entity.
+    # Index lets us look up a company from any of its past LEIs when
+    # ETL writes come in referencing an old identifier.
+    "CREATE INDEX company_historic_leis IF NOT EXISTS FOR (c:Company) ON (c.historic_leis)",
 ]
 
 

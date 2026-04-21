@@ -85,10 +85,21 @@ async def _merge(
         if record is None:
             return  # one or both nodes gone — nothing to merge
 
+        # Successor-LEI merges preserve lineage: append the retired LEI to
+        # `canonical.historic_leis` BEFORE the mergeNodes call swallows the
+        # duplicate node. Other rules don't need this.
+        retired_lei = None
+        if decision.rule_name == "successor_lei_match":
+            retired_lei = (decision.details or {}).get("retired_lei")
+
         await session.run(
             f"""
             MATCH (canonical:{label} {{{id_key}: $canonical_id}})
             MATCH (dup:{label} {{{id_key}: $dup_id}})
+            FOREACH (lei IN CASE WHEN $retired_lei IS NULL THEN [] ELSE [$retired_lei] END |
+              SET canonical.historic_leis = coalesce(canonical.historic_leis, []) + lei
+            )
+            WITH canonical, dup
             CALL apoc.refactor.mergeNodes([canonical, dup], {{
               properties: "discard",
               mergeRels: true
@@ -99,7 +110,8 @@ async def _merge(
               merged_id: $dup_id,
               merged_at: $merged_at,
               method: $rule_name,
-              entity_type: $entity_type
+              entity_type: $entity_type,
+              retired_lei: $retired_lei
             }})
             RETURN node
             """,
@@ -108,6 +120,7 @@ async def _merge(
             merged_at=_now(),
             rule_name=decision.rule_name,
             entity_type=label,
+            retired_lei=retired_lei,
         )
 
 

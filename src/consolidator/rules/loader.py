@@ -12,6 +12,7 @@ from src.consolidator.rules.company.exact_identifiers import (
 )
 from src.consolidator.rules.company.fuzzy import FuzzyNameSameCountry
 from src.consolidator.rules.company.name_country import ExactNameCountryMatch
+from src.consolidator.rules.company.successor import SuccessorLeiMatch
 from src.consolidator.rules.gds.node_similarity import (
     GdsNodeSimilarityAuthority,
     GdsNodeSimilarityCompany,
@@ -35,7 +36,10 @@ def load_all() -> None:
     register(ExactLeiMatch())
     register(ExactCikMatch())
     register(ExactVatMatch())
-    register(GdsSameAsClusterCollapseCompany())  # high confidence, structural
+    # Succession consolidation (active + retired LEI → merge, preserve retired
+    # in historic_leis). 0.98 confidence — runs after exact-id rules.
+    register(SuccessorLeiMatch())
+    register(GdsSameAsClusterCollapseCompany())
     register(ExactNameCountryMatch())
     register(FuzzyNameSameCountry())
     register(GdsNodeSimilarityCompany())
