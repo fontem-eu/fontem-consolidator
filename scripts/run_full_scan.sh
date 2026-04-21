@@ -101,7 +101,7 @@ parse_counters() {
   local m=$(echo "$status" | grep -oE 'merged=[0-9]+'    | cut -d= -f2)
   local f=$(echo "$status" | grep -oE 'flagged=[0-9]+'   | cut -d= -f2)
   local c=$(echo "$status" | grep -oE 'conflicts=[0-9]+' | cut -d= -f2)
-  printf '%d %d %d %d' "${p:-0}" "${m:-0}" "${f:-0}" "${c:-0}"
+  printf '%d %d %d %d\n' "${p:-0}" "${m:-0}" "${f:-0}" "${c:-0}"
 }
 
 emit_summary() {
