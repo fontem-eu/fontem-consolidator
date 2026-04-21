@@ -144,6 +144,8 @@ drain_file() {
       TOTAL_MERGED=$((TOTAL_MERGED + m))
       TOTAL_FLAGGED=$((TOTAL_FLAGGED + f))
       TOTAL_CONFLICTS=$((TOTAL_CONFLICTS + c))
+      printf '[%s] %-9s batch=%d n=%d cumul: processed=%d merged=%d flagged=%d conflicts=%d\n' \
+        "$(date +%H:%M:%S)" "$entity_type" "$batch_idx" "$n" "$TOTAL_PROCESSED" "$TOTAL_MERGED" "$TOTAL_FLAGGED" "$TOTAL_CONFLICTS"
     fi
 
     # Drop processed lines (1..$BATCH_SIZE)
