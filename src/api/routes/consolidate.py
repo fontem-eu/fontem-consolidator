@@ -12,6 +12,7 @@ class BatchRequest(BaseModel):
     entity_type: str  # "Company" | "Authority"
     ids: list[str]
     triggered_by: str = "batch"
+    exclude_rule_prefix: str | None = None  # e.g. "gds_" for fast bulk scans
 
 
 @router.post("/consolidate/company/{gmr_id}")
@@ -69,6 +70,7 @@ async def consolidate_batch(req: BatchRequest):
             entity_type=req.entity_type,
             entity_id=entity_id,
             triggered_by=req.triggered_by,
+            exclude_rule_prefix=req.exclude_rule_prefix,
         )
         run_ids.append(result.run_id)
         summary["processed"] += 1

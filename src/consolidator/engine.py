@@ -34,8 +34,13 @@ async def consolidate(
     entity_type: str,
     entity_id: str,
     triggered_by: str = "api",
+    exclude_rule_prefix: str | None = None,
 ) -> ConsolidationResult:
-    """Run the rule pipeline for an entity. Always records a :ConsolidationRun with outcomes."""
+    """Run the rule pipeline for an entity. Always records a :ConsolidationRun with outcomes.
+
+    exclude_rule_prefix: optional rule-name prefix to skip (e.g. "gds_" for
+    fast bulk scans — GDS rules reproject the whole subgraph per call).
+    """
 
     entity = await entities.load(driver, database, entity_type=entity_type, entity_id=entity_id)
 
@@ -66,6 +71,8 @@ async def consolidate(
     handled_targets: set[str] = set()
 
     for rule in list_rules():
+        if exclude_rule_prefix and rule.name.startswith(exclude_rule_prefix):
+            continue
         if entity_type not in rule.entity_types:
             continue
         try:
