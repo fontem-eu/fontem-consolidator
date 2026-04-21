@@ -40,19 +40,22 @@ class FuzzyNameSameCountry(Rule):
             try:
                 result = await session.run(
                     """
-                    CALL db.index.fulltext.queryNodes('company_name_ft', $query)
+                    CALL db.index.fulltext.queryNodes('company_name_ft', $search_text)
                     YIELD node, score
                     WHERE node.gmr_id <> $self_id
                       AND node.country = $country
                     RETURN node, score
                     LIMIT 20
                     """,
-                    query=sanitized,
+                    search_text=sanitized,
                     self_id=entity.id,
                     country=entity.properties["country"],
                 )
                 records = [record async for record in result]
-            except Exception:  # index may not exist in ephemeral test DBs
+            except Exception as exc:  # index may not exist in ephemeral test DBs
+                from loguru import logger
+
+                logger.warning("fuzzy_name: fulltext query failed: {}", exc)
                 return []
         threshold = settings.fuzzy_name_threshold
         name_len = max(1, len(entity.properties["name"]))

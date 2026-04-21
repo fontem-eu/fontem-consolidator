@@ -1,8 +1,10 @@
-"""Hard-identifier Company rules — LEI, CIK, VAT. All auto-merge when the same id appears on two nodes."""
+"""Hard-identifier Company rules — LEI, CIK, VAT. All auto-merge when the same id appears on two nodes,
+UNLESS another hard identifier disagrees — then flag-with-conflict instead."""
 
 from neo4j import AsyncDriver
 
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
+from src.consolidator.rules.conflict import conflict_decision, find_conflict
 
 
 class _ExactIdRule(Rule):
@@ -42,6 +44,16 @@ class _ExactIdRule(Rule):
         return candidates
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
+        conflict = find_conflict(entity, candidate)
+        if conflict:
+            return conflict_decision(
+                rule_name=self.name,
+                entity=entity,
+                candidate=candidate,
+                confidence=self.confidence,
+                conflict=conflict,
+                matched_property=self.id_property,
+            )
         return Decision(
             rule_name=self.name,
             action="merge",

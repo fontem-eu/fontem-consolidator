@@ -1,4 +1,5 @@
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
+from src.consolidator.rules.conflict import conflict_decision, find_conflict
 
 
 class ExactNameCountryMatch(Rule):
@@ -36,26 +37,16 @@ class ExactNameCountryMatch(Rule):
         return out
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
-        # Conflict detection: if both have LEI/VAT and they differ, refuse the auto-merge
-        # and downgrade to a conflict-flag via the engine + actions layer.
-        for prop in ("lei", "vat", "cik"):
-            a = entity.properties.get(prop)
-            b = candidate.entity.properties.get(prop)
-            if a and b and a != b:
-                return Decision(
-                    rule_name=self.name,
-                    action="flag",
-                    source_id=entity.id,
-                    target_id=candidate.entity.id,
-                    confidence=self.confidence,
-                    entity_type="Company",
-                    details={
-                        "conflict": True,
-                        "conflicting_property": prop,
-                        "left": a,
-                        "right": b,
-                    },
-                )
+        # Refuse the auto-merge and downgrade to a conflict-flag when any hard id disagrees.
+        conflict = find_conflict(entity, candidate)
+        if conflict:
+            return conflict_decision(
+                rule_name=self.name,
+                entity=entity,
+                candidate=candidate,
+                confidence=self.confidence,
+                conflict=conflict,
+            )
         return Decision(
             rule_name=self.name,
             action="merge",

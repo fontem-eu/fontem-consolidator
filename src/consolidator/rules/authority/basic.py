@@ -125,12 +125,12 @@ class FuzzyNameSameCountryAuthority(Rule):
             try:
                 result = await session.run(
                     """
-                    CALL db.index.fulltext.queryNodes('authority_name_ft', $query)
+                    CALL db.index.fulltext.queryNodes('authority_name_ft', $search_text)
                     YIELD node, score
                     WHERE node.authority_id <> $self_id AND node.country = $country
                     RETURN node, score LIMIT 20
                     """,
-                    query=sanitized,
+                    search_text=sanitized,
                     self_id=entity.id,
                     country=entity.properties["country"],
                 )

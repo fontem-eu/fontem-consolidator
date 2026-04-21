@@ -12,6 +12,14 @@ from src.consolidator.rules.company.exact_identifiers import (
 )
 from src.consolidator.rules.company.fuzzy import FuzzyNameSameCountry
 from src.consolidator.rules.company.name_country import ExactNameCountryMatch
+from src.consolidator.rules.gds.node_similarity import (
+    GdsNodeSimilarityAuthority,
+    GdsNodeSimilarityCompany,
+)
+from src.consolidator.rules.gds.wcc_collapse import (
+    GdsSameAsClusterCollapseAuthority,
+    GdsSameAsClusterCollapseCompany,
+)
 from src.consolidator.rules.registry import register
 
 
@@ -27,9 +35,13 @@ def load_all() -> None:
     register(ExactLeiMatch())
     register(ExactCikMatch())
     register(ExactVatMatch())
+    register(GdsSameAsClusterCollapseCompany())  # high confidence, structural
     register(ExactNameCountryMatch())
     register(FuzzyNameSameCountry())
+    register(GdsNodeSimilarityCompany())
     # Authority
     register(ExactAuthorityIdMatch())
+    register(GdsSameAsClusterCollapseAuthority())
     register(ExactNameCountryMatchAuthority())
     register(FuzzyNameSameCountryAuthority())
+    register(GdsNodeSimilarityAuthority())
