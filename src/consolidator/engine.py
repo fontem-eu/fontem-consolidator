@@ -110,7 +110,12 @@ async def consolidate(
                     "confidence": decision.confidence,
                 }
             )
-            if outcome in ("auto_merge", "auto_link"):
+            # Once a (source, target) pair has produced any concrete decision,
+            # short-circuit: lower-confidence rules would only overwrite the
+            # :SAME_AS edge's properties (since MERGE is idempotent on the pair)
+            # and drown the higher-confidence outcome — in particular a
+            # `conflict:true` flag lost to a later plain fuzzy flag.
+            if outcome in ("auto_merge", "auto_link", "conflict", "flag"):
                 handled_targets.add(candidate.entity.id)
 
     summary_outcome = _summarize(decisions_recorded)

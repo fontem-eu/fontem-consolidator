@@ -178,6 +178,33 @@ async def test_gds_same_as_wcc_collapses_reviewed_cluster(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_flag_survives_subsequent_fuzzy_match(driver, monkeypatch):
+    """Regression: when exact-name-country emits conflict and fuzzy matches the same pair,
+    the edge must retain conflict:true and method=exact_name_country_match.
+    Without short-circuit, MERGE on the same (a,b) pair would overwrite the properties."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    monkeypatch.setattr(settings, "fuzzy_name_threshold", 0.01)
+    # Same name + country with conflicting VATs → exact-name-country emits conflict
+    # Fuzzy-name would also match, but must NOT overwrite the conflict flag
+    await _create_company(driver, gmr_id="A", name="Socotec", country="FRA", vat="V-1")
+    await _create_company(driver, gmr_id="B", name="Socotec", country="FRA", vat="V-2")
+    async with driver.session() as s:
+        await s.run("CALL db.awaitIndexes(30)")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
+    )
+
+    rows = await _count(
+        driver,
+        "MATCH (:Company {gmr_id:'A'})-[r:SAME_AS]-(:Company {gmr_id:'B'}) "
+        "WHERE r.conflict = true AND r.method = 'exact_name_country_match' "
+        "RETURN count(r)",
+    )
+    assert rows == 1
+
+
+@pytest.mark.asyncio
 async def test_consolidation_run_and_decisionlog_always_written(driver, monkeypatch):
     """Even for a no-match entity, a :ConsolidationRun exists. And for actual
     matches, a :DecisionLog chains off the run via :RuleApplication."""
