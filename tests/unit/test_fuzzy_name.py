@@ -55,6 +55,40 @@ def test_normalise_handles_punctuation():
     assert _normalise("kleiner & bold GmbH") == "KLEINER BOLD"
 
 
+def test_normalise_strips_ukrainian_llc_boilerplate():
+    # Ukrainian LLC prefix — what matters is inside the quotes
+    assert _normalise('ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "АНСУ"').strip().strip('"') == 'АНСУ'
+    # Double space between words — still collapses
+    assert _normalise('ТОВАРИСТВО З ОБМЕЖЕНОЮ  ВІДПОВІДАЛЬНІСТЮ "ГЕТЬМАНСЬКЕ"').strip().strip('"') == 'ГЕТЬМАНСЬКЕ'
+
+
+def test_normalise_strips_short_ukrainian_tov():
+    assert _normalise('ТОВ "Егзагон"').strip().strip('"') == 'ЕГЗАГОН'
+
+
+def test_normalise_strips_polish_long_form():
+    assert _normalise('PK SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ').strip() == 'PK'
+    assert _normalise('Skamex Spółka Akcyjna').strip() == 'SKAMEX'
+
+
+def test_normalise_strips_baltic_forms():
+    assert _normalise('UAB "Gama Projects"').strip().strip('"') == 'GAMA PROJECTS'
+    assert _normalise('SIA Megacom').strip() == 'MEGACOM'
+
+
+def test_normalise_strips_czech_slovak():
+    assert _normalise('Moravia s.r.o.').strip() == 'MORAVIA'
+    assert _normalise('ACME a.s.').strip() == 'ACME'
+
+
+def test_normalise_kiloutou_variants_collapse():
+    # The practical regression: KILOUTOU / SAS KILOUTOU / KILOUTOU SAS all normalise identically
+    a = _normalise('KILOUTOU').strip()
+    b = _normalise('SAS KILOUTOU').strip()
+    c = _normalise('KILOUTOU SAS').strip()
+    assert a == b == c == 'KILOUTOU'
+
+
 @pytest.mark.asyncio
 async def test_fuzzy_rejects_parent_subsidiary():
     """'SOCOTEC' vs 'SOCOTEC CONSTRUCTION' must NOT emit a flag (Jaro-Winkler < 0.92)."""

@@ -30,17 +30,38 @@ _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]')
 # "actually different legal entity" case).
 # Alternation order matters — longer patterns FIRST so "S.A.R.L." wins over
 # the shorter "S.A" prefix match.
+#
+# Cyrillic boilerplate is matched case-insensitively with an explicit flag
+# block; Python's re only lowercases ASCII unless you opt in to Unicode.
 _LEGAL_SUFFIX = re.compile(
-    r"\b("
+    r"(?:"
+    # Long Slavic forms first (must be greedy before short tokens like ТОВ / ООО)
+    r"(?i:ТОВАРИСТВО\s+З\s+ОБМЕЖЕНОЮ\s+ВІДПОВІДАЛЬНІСТЮ)|"       # UA LLC
+    r"(?i:ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ\s+ОТВЕТСТВЕННОСТЬЮ)|"      # RU LLC
+    r"(?i:SPÓŁKA\s+Z\s+OGRANICZONĄ\s+ODPOWIEDZIALNOŚCIĄ)|"        # PL LLC long form
+    r"(?i:SPÓŁKA\s+AKCYJNA)|"                                      # PL joint-stock
+    # Short forms — word-boundary anchored
+    r"\b(?:"
+    # French / Romance
     r"SARL|S\.?A\.?R\.?L\.?|"
     r"S\.?A\.?S\.?|SAS|"
     r"SPRL|SRL|SPA|"
+    # English/German/Nordic/Baltic
     r"GMBH|LTDA|LLP|LLC|LTD|"
     r"OYJ|ASA|APS|PLC|PTE|PTY|"
     r"S\.?A\.?|"
-    r"AB|AG|AS|BV|INC|KFT|KG|KK|NV|OY|SE|SL|SLU|SP|UG"
-    r")\.?\b",
-    re.IGNORECASE,
+    r"AB|AG|AS|BV|INC|KFT|KG|KK|NV|OY|SE|SL|SLU|SP|UG|"
+    # Baltic
+    r"UAB|SIA|OÜ|"
+    # Czech / Slovak
+    r"S\.?R\.?O\.?|SRO|A\.?S\.?|"
+    # Polish short
+    r"SP\.?\s?Z\s?O\.?\s?O\.?|S\.?C\.?|"
+    # Cyrillic short (Ukrainian ТОВ, Russian ООО)
+    r")\.?\b|"
+    r"(?i:\bТОВ\b)|(?i:\bООО\b)"
+    r")",
+    re.UNICODE,
 )
 _PUNCT = re.compile(r"[^\w\s]")
 _SPACES = re.compile(r"\s+")

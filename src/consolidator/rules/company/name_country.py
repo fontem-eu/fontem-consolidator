@@ -4,7 +4,10 @@ from src.consolidator.rules.conflict import conflict_decision, find_conflict
 
 class ExactNameCountryMatch(Rule):
     name = "exact_name_country_match"
-    description = "Two :Company nodes share the same normalized (name, country) → merge iff no LEI/VAT conflict."
+    description = (
+        "Two :Company nodes share the same (name, country) after whitespace/"
+        "punctuation normalisation (apoc.text.clean) → merge iff no hard-id conflict."
+    )
     entity_types = {"Company"}
     confidence = 0.95
     action = "merge"
@@ -17,10 +20,13 @@ class ExactNameCountryMatch(Rule):
 
         driver = await get_driver()
         async with driver.session() as session:
+            # apoc.text.clean strips non-alphanumerics + lowercases, so
+            # "NEURAXPHARM FRANCE ( Rang 1)" == "NEURAXPHARM FRANCE (Rang 1)"
+            # == "NEURAXPHARM FRANCE  (Rang 1)" all collapse.
             result = await session.run(
                 """
                 MATCH (c:Company)
-                WHERE toLower(c.name) = toLower($name)
+                WHERE apoc.text.clean(c.name) = apoc.text.clean($name)
                   AND c.country = $country
                   AND c.gmr_id <> $self_id
                 RETURN c

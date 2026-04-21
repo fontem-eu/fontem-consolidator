@@ -81,10 +81,12 @@ class ExactNameCountryMatchAuthority(Rule):
 
         driver = await get_driver()
         async with driver.session() as session:
+            # apoc.text.clean strips whitespace + punctuation + lowercases so
+            # minor typographic variants collapse to an exact match.
             result = await session.run(
                 """
                 MATCH (a:Authority)
-                WHERE toLower(a.name) = toLower($name)
+                WHERE apoc.text.clean(a.name) = apoc.text.clean($name)
                   AND a.country = $country
                   AND a.authority_id <> $self_id
                 RETURN a

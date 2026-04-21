@@ -108,11 +108,15 @@ async def test_conflicting_identifiers_refuse_merge(driver, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fuzzy_name_flags_same_as(driver, monkeypatch):
-    """Names that differ by a legal-form suffix normalise identically →
-    Jaro-Winkler = 1.0, rule flags :SAME_AS."""
+    """Names close under Jaro-Winkler but NOT identical after apoc.text.clean
+    (so they don't collapse via the exact rule) → fuzzy flag."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
-    await _create_company(driver, gmr_id="A", name="Globex Corporation SA", country="FR")
-    await _create_company(driver, gmr_id="B", name="Globex Corporation S.A.", country="FR")
+    # These differ by a locale-specific word; apoc.text.clean won't fold them,
+    # but Jaro-Winkler will score them high.
+    await _create_company(driver, gmr_id="A",
+                          name="Globex Corporation International", country="FR")
+    await _create_company(driver, gmr_id="B",
+                          name="Globex Corporation Internacional", country="FR")
 
     async with driver.session() as s:
         await s.run("CALL db.awaitIndexes(30)")
@@ -129,6 +133,50 @@ async def test_fuzzy_name_flags_same_as(driver, monkeypatch):
     assert same_as_either_direction >= 1
     # Both companies still present (fuzzy never auto-merges)
     assert await _count(driver, "MATCH (c:Company) RETURN count(c)") == 2
+
+
+@pytest.mark.asyncio
+async def test_whitespace_variants_auto_merge_via_exact_rule(driver, monkeypatch):
+    """Two companies whose names differ only by whitespace/punctuation are
+    caught by apoc.text.clean in exact_name_country_match and auto-merged."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(driver, gmr_id="A", name="NEURAXPHARM FRANCE (Rang 1)", country="FRA")
+    await _create_company(driver, gmr_id="B", name="NEURAXPHARM FRANCE ( Rang 1)", country="FRA")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
+    )
+
+    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
+    assert remaining == 1
+    merges = await _count(
+        driver, "MATCH (:MergeEvent {method:'exact_name_country_match'}) RETURN count(*)"
+    )
+    assert merges >= 1
+
+
+@pytest.mark.asyncio
+async def test_ukrainian_boilerplate_not_flagged(driver, monkeypatch):
+    """Two Ukrainian LLCs with different distinctive names but shared LLC
+    boilerplate must NOT produce a fuzzy flag — the boilerplate is stripped
+    before Jaro-Winkler."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(driver, gmr_id="A", country="UKR",
+                          name='ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "АНСУ"')
+    await _create_company(driver, gmr_id="B", country="UKR",
+                          name='ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "АЕРОК"')
+    async with driver.session() as s:
+        await s.run("CALL db.awaitIndexes(30)")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
+    )
+
+    any_edge = await _count(
+        driver,
+        "MATCH (:Company {gmr_id:'A'})-[r:SAME_AS]-(:Company {gmr_id:'B'}) RETURN count(r)",
+    )
+    assert any_edge == 0
 
 
 @pytest.mark.asyncio
