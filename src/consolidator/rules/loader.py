@@ -2,6 +2,7 @@
 
 from src.consolidator.rules.authority.basic import (
     ExactAuthorityIdMatch,
+    ExactNameAnyCountryAuthority,
     ExactNameCountryMatchAuthority,
     FuzzyNameSameCountryAuthority,
 )
@@ -47,5 +48,8 @@ def load_all() -> None:
     register(ExactAuthorityIdMatch())
     register(GdsSameAsClusterCollapseAuthority())
     register(ExactNameCountryMatchAuthority())
+    # Cross-country same-name flag for EU bodies (EEAS, JRC, eu-LISA, …).
+    # Confidence 0.90 — runs after same-country exact (0.95) and below fuzzy.
+    register(ExactNameAnyCountryAuthority())
     register(FuzzyNameSameCountryAuthority())
     register(GdsNodeSimilarityAuthority())

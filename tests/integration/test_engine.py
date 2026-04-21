@@ -304,6 +304,55 @@ async def test_malformed_vat_does_not_trigger_conflict(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_authority_cross_country_flags_same_as(driver, monkeypatch):
+    """EU-body pattern: same clean name across different countries → flag :SAME_AS.
+    Must NOT auto-merge (human review required)."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_authority(driver, authority_id="eeas-bel",
+                            name="European External Action Service (EEAS)", country="BEL")
+    await _create_authority(driver, authority_id="eeas-mus",
+                            name="European External Action Service (EEAS)", country="MUS")
+    async with driver.session() as s:
+        await s.run("CALL db.awaitIndexes(30)")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Authority", entity_id="eeas-bel", triggered_by="test"
+    )
+
+    # Both authorities still exist (flag, not merge)
+    remaining = await _count(driver, "MATCH (a:Authority) RETURN count(a)")
+    assert remaining == 2
+    # SAME_AS edge with the new rule's method
+    flag = await _count(
+        driver,
+        "MATCH (:Authority {authority_id:'eeas-bel'})-[r:SAME_AS]-(:Authority {authority_id:'eeas-mus'}) "
+        "WHERE r.method = 'exact_name_any_country_authority' RETURN count(r)",
+    )
+    assert flag == 1
+
+
+@pytest.mark.asyncio
+async def test_authority_cross_country_skipped_when_same_country_merge_wins(
+    driver, monkeypatch
+):
+    """Two authorities with same name AND same country must be auto-merged by
+    the higher-confidence same-country rule; the cross-country rule must not
+    then write a spurious SAME_AS on a non-existent node."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_authority(driver, authority_id="auth-a",
+                            name="Ministère de l'Économie", country="FR")
+    await _create_authority(driver, authority_id="auth-b",
+                            name="Ministère de l'Économie", country="FR")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Authority", entity_id="auth-a", triggered_by="test"
+    )
+
+    remaining = await _count(driver, "MATCH (a:Authority) RETURN count(a)")
+    assert remaining == 1
+
+
+@pytest.mark.asyncio
 async def test_authority_name_country_merges(driver, monkeypatch):
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
     await _create_authority(

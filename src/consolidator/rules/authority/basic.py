@@ -116,6 +116,71 @@ class ExactNameCountryMatchAuthority(Rule):
         )
 
 
+class ExactNameAnyCountryAuthority(Rule):
+    """EU-wide bodies (EEAS, DG JRC, eu-LISA, …) show up in TED once per
+    contracting-destination country and end up as N duplicate authority
+    nodes with the same name but different `country` values.
+
+    Match on apoc.text.clean(name) alone. We flag (never auto-merge)
+    because occasionally two entities with an identical exact name in
+    different countries are genuinely different institutions — a human
+    decides.
+    """
+    name = "exact_name_any_country_authority"
+    description = (
+        "Two :Authority nodes share the same (cleaned) name across different "
+        "countries → flag :SAME_AS for review. Targets EU bodies (EEAS, JRC, "
+        "eu-LISA) that TED publishes once per destination country."
+    )
+    entity_types = {"Authority"}
+    confidence = 0.90
+    action = "flag"
+
+    async def applies(self, entity: Entity) -> bool:
+        return bool(entity.properties.get("name"))
+
+    async def find_candidates(self, entity: Entity) -> list[Candidate]:
+        from src.consolidator.neo4j.client import get_driver
+
+        driver = await get_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (a:Authority)
+                WHERE apoc.text.clean(a.name) = apoc.text.clean($name)
+                  AND a.authority_id <> $self_id
+                  AND coalesce(a.country, "") <> coalesce($country, "")
+                RETURN a
+                """,
+                name=entity.properties["name"],
+                country=entity.properties.get("country") or "",
+                self_id=entity.id,
+            )
+            records = [record async for record in result]
+        return [
+            Candidate(
+                entity=Entity("Authority", dict(rec["a"])["authority_id"], dict(rec["a"])),
+                context={"cross_country": True},
+            )
+            for rec in records
+        ]
+
+    async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
+        return Decision(
+            rule_name=self.name,
+            action="flag",
+            source_id=entity.id,
+            target_id=candidate.entity.id,
+            confidence=self.confidence,
+            entity_type="Authority",
+            details={
+                "cross_country": True,
+                "source_country": entity.properties.get("country"),
+                "target_country": candidate.entity.properties.get("country"),
+            },
+        )
+
+
 class FuzzyNameSameCountryAuthority(Rule):
     name = "fuzzy_name_same_country_authority"
     description = (
