@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from src.config import settings
@@ -15,8 +15,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _iso(value: Any) -> str | None:
+    """Coerce Neo4j DateTime / Python datetime / string into a JSON-friendly ISO string."""
+    if value is None:
+        return None
+    if hasattr(value, "iso_format"):  # neo4j.time.DateTime
+        return value.iso_format()
+    if hasattr(value, "isoformat"):  # datetime.datetime
+        return value.isoformat()
+    return str(value)
+
+
 @router.get("/candidates")
 async def list_candidates(
+    response: Response,
     entity_type: str | None = Query(default=None),
     reviewed: bool = Query(default=False),
     limit: int = Query(default=50, le=500),
@@ -61,13 +73,17 @@ async def list_candidates(
                 "entity_type": a_type,
                 "rule_name": rec["rule_name"],
                 "confidence": rec["confidence"],
-                "detected_at": rec["detected_at"],
+                "detected_at": _iso(rec["detected_at"]),
                 "conflict": rec["conflict"],
-                "source_entity": rec["a_props"],
-                "target_entity": rec["b_props"],
+                "source_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
+                                  for k, v in rec["a_props"].items()},
+                "target_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
+                                  for k, v in rec["b_props"].items()},
             }
         )
-    return {"candidates": out, "next_cursor": out[-1]["detected_at"] if len(out) == limit else None}
+    if len(out) == limit and out[-1]["detected_at"]:
+        response.headers["X-Next-Cursor"] = out[-1]["detected_at"]
+    return out
 
 
 class DecideBody(BaseModel):

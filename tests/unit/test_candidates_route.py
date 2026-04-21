@@ -42,7 +42,7 @@ def test_list_candidates_empty(client):
     with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)):
         r = c.get("/candidates?reviewed=false&limit=10")
     assert r.status_code == 200
-    assert r.json()["candidates"] == []
+    assert r.json() == []
 
 
 def test_list_candidates_returns_shape(client):
@@ -66,8 +66,8 @@ def test_list_candidates_returns_shape(client):
     with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)):
         r = c.get("/candidates?reviewed=false")
     body = r.json()
-    assert len(body["candidates"]) == 1
-    cand = body["candidates"][0]
+    assert len(body) == 1
+    cand = body[0]
     assert cand["rule_name"] == "fuzzy_name_same_country"
     assert cand["confidence"] == 0.87
     assert cand["from_id"] == "gmr-A"
