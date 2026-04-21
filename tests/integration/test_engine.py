@@ -79,9 +79,13 @@ async def test_exact_lei_flags_when_auto_disabled(driver, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_conflicting_identifiers_refuse_merge(driver, monkeypatch):
+    """Same LEI, different *canonical* VATs → conflict refused. VATs must
+    both canonicalise to valid values for the conflict to fire."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
-    await _create_company(driver, gmr_id="A", lei="LEI-A", vat="V-1", name="Acme", country="FR")
-    await _create_company(driver, gmr_id="B", lei="LEI-A", vat="V-2", name="Acme", country="FR")
+    await _create_company(driver, gmr_id="A", lei="529900WTOG7RHO5TCH58",
+                          vat="FR12345678901", name="Acme", country="FR")
+    await _create_company(driver, gmr_id="B", lei="529900WTOG7RHO5TCH58",
+                          vat="FR98765432109", name="Acme", country="FR")
 
     await engine.consolidate(
         driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
@@ -104,15 +108,12 @@ async def test_conflicting_identifiers_refuse_merge(driver, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fuzzy_name_flags_same_as(driver, monkeypatch):
+    """Names that differ by a legal-form suffix normalise identically →
+    Jaro-Winkler = 1.0, rule flags :SAME_AS."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
-    # Neo4j 5.x uses BM25 for fulltext scoring, which produces low absolute
-    # scores vs. classic Lucene. The normalization factor in the fuzzy rule
-    # is tuned for real ETL data; pin a low threshold for the test.
-    monkeypatch.setattr(settings, "fuzzy_name_threshold", 0.01)
-    await _create_company(driver, gmr_id="A", name="Globex Corporation International", country="FR")
-    await _create_company(driver, gmr_id="B", name="Globex Corporation Internacional", country="FR")
+    await _create_company(driver, gmr_id="A", name="Globex Corporation SA", country="FR")
+    await _create_company(driver, gmr_id="B", name="Globex Corporation S.A.", country="FR")
 
-    # Fulltext index is populated asynchronously — wait for it to be online.
     async with driver.session() as s:
         await s.run("CALL db.awaitIndexes(30)")
 
@@ -123,11 +124,53 @@ async def test_fuzzy_name_flags_same_as(driver, monkeypatch):
     same_as_either_direction = await _count(
         driver,
         "MATCH (a:Company {gmr_id:'A'})-[r:SAME_AS]-(b:Company {gmr_id:'B'}) "
-        "WHERE r.reviewed = false RETURN count(r)",
+        "WHERE r.reviewed = false AND coalesce(r.conflict,false) = false RETURN count(r)",
     )
     assert same_as_either_direction >= 1
     # Both companies still present (fuzzy never auto-merges)
     assert await _count(driver, "MATCH (c:Company) RETURN count(c)") == 2
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_rejects_parent_subsidiary(driver, monkeypatch):
+    """SOCOTEC vs SOCOTEC CONSTRUCTION must NOT flag — too dissimilar under JW."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(driver, gmr_id="PARENT", name="SOCOTEC", country="FRA")
+    await _create_company(driver, gmr_id="SUB", name="SOCOTEC CONSTRUCTION", country="FRA")
+
+    async with driver.session() as s:
+        await s.run("CALL db.awaitIndexes(30)")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="PARENT", triggered_by="test"
+    )
+
+    any_edge = await _count(
+        driver,
+        "MATCH (:Company {gmr_id:'PARENT'})-[r:SAME_AS]-(:Company {gmr_id:'SUB'}) RETURN count(r)",
+    )
+    assert any_edge == 0
+
+
+@pytest.mark.asyncio
+async def test_malformed_vat_does_not_trigger_conflict(driver, monkeypatch):
+    """Same (name, country), one VAT is a TED notice ID → merge proceeds (not conflict)."""
+    monkeypatch.setattr(settings, "auto_merge_enabled", True)
+    await _create_company(driver, gmr_id="A", name="Malerbetrieb Cambel", country="DEU",
+                          vat="DE273691032")
+    await _create_company(driver, gmr_id="B", name="Malerbetrieb Cambel", country="DEU",
+                          vat="1594225-1-0-1")  # TED notice in vat field
+
+    async with driver.session() as s:
+        await s.run("CALL db.awaitIndexes(30)")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
+    )
+
+    # Should have merged (both nodes collapse into one)
+    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
+    assert remaining == 1
 
 
 @pytest.mark.asyncio
@@ -183,11 +226,14 @@ async def test_conflict_flag_survives_subsequent_fuzzy_match(driver, monkeypatch
     the edge must retain conflict:true and method=exact_name_country_match.
     Without short-circuit, MERGE on the same (a,b) pair would overwrite the properties."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
-    monkeypatch.setattr(settings, "fuzzy_name_threshold", 0.01)
-    # Same name + country with conflicting VATs → exact-name-country emits conflict
-    # Fuzzy-name would also match, but must NOT overwrite the conflict flag
-    await _create_company(driver, gmr_id="A", name="Socotec", country="FRA", vat="V-1")
-    await _create_company(driver, gmr_id="B", name="Socotec", country="FRA", vat="V-2")
+    # Same name + country with conflicting *canonical* VATs → exact-name-country
+    # emits conflict. The fuzzy rule would then also match the same pair,
+    # but its own conflict-skip short-circuits it (noop) — so the edge stays
+    # flagged as conflict from the exact rule.
+    await _create_company(driver, gmr_id="A", name="Socotec", country="FRA",
+                          vat="FR12345678901")
+    await _create_company(driver, gmr_id="B", name="Socotec", country="FRA",
+                          vat="FR98765432109")
     async with driver.session() as s:
         await s.run("CALL db.awaitIndexes(30)")
 

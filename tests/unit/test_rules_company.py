@@ -86,15 +86,19 @@ async def test_exact_cik_match_emits_merge():
     assert (await rule.resolve(entity, candidates[0])).confidence == 1.0
 
 
+LEI_VALID_A = "529900WTOG7RHO5TCH58"
+LEI_VALID_B = "529900PC9XG1KHIJD788"
+
+
 @pytest.mark.asyncio
 async def test_name_country_match_detects_lei_conflict():
-    """Same name + country but different LEIs → must refuse merge, emit conflict flag."""
+    """Same name + country but different canonical LEIs → must refuse merge, emit conflict flag."""
     rule = ExactNameCountryMatch()
     entity = Entity(
-        "Company", "gmr-A", {"name": "Acme Holdings", "country": "FR", "lei": "LEI-A"}
+        "Company", "gmr-A", {"name": "Acme Holdings", "country": "FR", "lei": LEI_VALID_A}
     )
     candidate_rec = {
-        "c": {"gmr_id": "gmr-B", "name": "Acme Holdings", "country": "FR", "lei": "LEI-B"}
+        "c": {"gmr_id": "gmr-B", "name": "Acme Holdings", "country": "FR", "lei": LEI_VALID_B}
     }
     candidates = await _run_find(rule, entity, [candidate_rec])
     assert len(candidates) == 1
@@ -102,6 +106,18 @@ async def test_name_country_match_detects_lei_conflict():
     assert decision.action == "flag"
     assert decision.details["conflict"] is True
     assert decision.details["conflicting_property"] == "lei"
+
+
+@pytest.mark.asyncio
+async def test_name_country_match_merges_when_both_leis_malformed():
+    """If both 'LEIs' are malformed (non-canonical), they're effectively unknown —
+    no conflict, merge proceeds."""
+    rule = ExactNameCountryMatch()
+    entity = Entity("Company", "gmr-A", {"name": "Acme", "country": "FR", "lei": "LEI-A"})
+    candidate_rec = {"c": {"gmr_id": "gmr-B", "name": "Acme", "country": "FR", "lei": "LEI-B"}}
+    candidates = await _run_find(rule, entity, [candidate_rec])
+    decision = await rule.resolve(entity, candidates[0])
+    assert decision.action == "merge"
 
 
 @pytest.mark.asyncio

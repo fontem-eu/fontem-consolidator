@@ -9,3 +9,4 @@ htmlcov/
 *.log
 .vscode/
 .idea/
+scripts/.scan_state/

@@ -2,10 +2,23 @@
 
 import re
 
+from rapidfuzz.distance import JaroWinkler
+
 from src.config import settings
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]')
+_PUNCT = re.compile(r"[^\w\s]")
+_SPACES = re.compile(r"\s+")
+
+
+def _normalise_authority(name: str) -> str:
+    """Authorities have fewer legal-form suffixes than companies; mostly
+    public-body words. Lower-case, drop punctuation, collapse spaces."""
+    s = name.upper()
+    s = _PUNCT.sub(" ", s)
+    s = _SPACES.sub(" ", s).strip()
+    return s
 
 
 class ExactAuthorityIdMatch(Rule):
@@ -104,11 +117,12 @@ class ExactNameCountryMatchAuthority(Rule):
 class FuzzyNameSameCountryAuthority(Rule):
     name = "fuzzy_name_same_country_authority"
     description = (
-        f"Full-text name match across :Authority in same country, "
-        f"threshold {settings.fuzzy_name_threshold} → flag :SAME_AS."
+        "Full-text candidate fetch + Jaro-Winkler similarity on normalised "
+        "names (same country). Flags :SAME_AS above "
+        f"{settings.fuzzy_name_threshold}."
     )
     entity_types = {"Authority"}
-    confidence = 0.9
+    confidence = 0.95
     action = "flag"
 
     async def applies(self, entity: Entity) -> bool:
@@ -137,28 +151,37 @@ class FuzzyNameSameCountryAuthority(Rule):
                 records = [record async for record in result]
             except Exception:
                 return []
-        out = []
-        name_len = max(1, len(entity.properties["name"]))
+
+        threshold = settings.fuzzy_name_threshold
+        norm_self = _normalise_authority(entity.properties["name"])
+        if not norm_self:
+            return []
+
+        out: list[Candidate] = []
         for rec in records:
-            normalised = rec["score"] / (name_len * 0.1 + 1)
-            if normalised < settings.fuzzy_name_threshold:
-                continue
             props = dict(rec["node"])
+            norm_other = _normalise_authority(props.get("name") or "")
+            if not norm_other:
+                continue
+            sim = JaroWinkler.normalized_similarity(norm_self, norm_other)
+            if sim < threshold:
+                continue
             out.append(
                 Candidate(
                     entity=Entity("Authority", props["authority_id"], props),
-                    context={"raw_score": rec["score"], "normalised": normalised},
+                    context={"jw_similarity": sim, "raw_score": float(rec["score"])},
                 )
             )
         return out
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
+        sim = float(candidate.context.get("jw_similarity", 0.0))
         return Decision(
             rule_name=self.name,
             action="flag",
             source_id=entity.id,
             target_id=candidate.entity.id,
-            confidence=min(0.95, candidate.context.get("normalised", self.confidence)),
+            confidence=sim,
             entity_type="Authority",
-            details={"raw_score": candidate.context.get("raw_score")},
+            details={"jw_similarity": sim},
         )

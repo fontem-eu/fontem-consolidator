@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     # Start flag-only; flip after the decision log has been observed.
     auto_merge_enabled: bool = False
 
-    fuzzy_name_threshold: float = 0.85
+    # Jaro-Winkler similarity on normalised names (uppercase + legal-form
+    # suffixes stripped). 0.92 keeps very-close variants while rejecting
+    # parent/subsidiary pairs like "SOCOTEC" vs "SOCOTEC CONSTRUCTION" (~0.88).
+    fuzzy_name_threshold: float = 0.92
     gds_similarity_threshold: float = 0.7
     gds_top_k: int = 5
 
