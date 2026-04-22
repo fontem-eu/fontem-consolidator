@@ -22,12 +22,40 @@ from src.consolidator.clients.linguistics import (
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 
+# Country → primary official language. Used when the Authority node doesn't
+# carry a `name_lang` yet (ETL hasn't backfilled it). Covers the 27 EU member
+# states in alpha-3; non-EU buyers (UK/CH/US embassies appearing in TED)
+# fall through to "en".
+_COUNTRY_PRIMARY_LANG: dict[str, str] = {
+    "AUT": "de", "BEL": "nl", "BGR": "bg", "HRV": "hr", "CYP": "el",
+    "CZE": "cs", "DNK": "da", "EST": "et", "FIN": "fi", "FRA": "fr",
+    "DEU": "de", "GRC": "el", "HUN": "hu", "IRL": "en", "ITA": "it",
+    "LVA": "lv", "LTU": "lt", "LUX": "fr", "MLT": "mt", "NLD": "nl",
+    "POL": "pl", "PRT": "pt", "ROU": "ro", "SVK": "sk", "SVN": "sl",
+    "ESP": "es", "SWE": "sv",
+}
+
+
+def infer_source_lang(entity: Entity) -> str:
+    """Source language for translation prompts.
+
+    Order: explicit `name_lang` → country's primary official language → "en".
+    Without this fallback Polish/Czech/etc. authorities get treated as English
+    and Mistral returns the original string untranslated (garbage in, garbage
+    out).
+    """
+    explicit = (entity.properties.get("name_lang") or "").lower()
+    if explicit:
+        return explicit
+    country = (entity.properties.get("country") or "").upper()
+    return _COUNTRY_PRIMARY_LANG.get(country, "en")
+
+
 def missing_targets(entity: Entity) -> list[str]:
     """Return the EU locales that have no name_<lang> set on the node."""
-    # `name_lang` is the source language; we never translate a name into its
-    # own language (Mistral would happily return the original back, but it
-    # burns tokens).
-    src = (entity.properties.get("name_lang") or "").lower()
+    # Never translate a name into its own language — Mistral would round-trip
+    # the original and burn tokens for no benefit.
+    src = infer_source_lang(entity)
     return [
         code for code in EU_OFFICIAL_LANGS
         if code != src and not entity.properties.get(f"name_{code}")
@@ -64,7 +92,7 @@ class TranslationEnrichmentAuthority(Rule):
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
         name = entity.properties["name"]
-        src_lang = (entity.properties.get("name_lang") or "en").lower()
+        src_lang = infer_source_lang(entity)
 
         targets = missing_targets(entity)
         translations: dict[str, str] = {}
