@@ -12,6 +12,7 @@ from src.consolidator.clients.linguistics import (
 )
 from src.consolidator.rules.authority.enrichment import (
     TranslationEnrichmentAuthority,
+    infer_source_lang,
     missing_targets,
     needs_embedding,
 )
@@ -46,6 +47,25 @@ def test_needs_embedding_detects_absence_and_empty():
     assert needs_embedding(_entity()) is True
     assert needs_embedding(_entity(name_embedding=[])) is True
     assert needs_embedding(_entity(name_embedding=[0.1, 0.2])) is False
+
+
+def test_infer_source_lang_prefers_explicit():
+    assert infer_source_lang(_entity(name_lang="pl", country="POL")) == "pl"
+    # Mixed-case is normalised
+    assert infer_source_lang(_entity(name_lang="PL")) == "pl"
+
+
+def test_infer_source_lang_falls_back_to_country_primary():
+    # No explicit name_lang → country's primary EU official language
+    assert infer_source_lang(_entity(country="POL")) == "pl"
+    assert infer_source_lang(_entity(country="DEU")) == "de"
+    assert infer_source_lang(_entity(country="BEL")) == "nl"
+    assert infer_source_lang(_entity(country="MLT")) == "mt"
+
+
+def test_infer_source_lang_defaults_to_en_for_unknown_country():
+    assert infer_source_lang(_entity(country="USA")) == "en"
+    assert infer_source_lang(_entity()) == "en"
 
 
 # ── applies() gating ──────────────────────────────────────────────
