@@ -19,5 +19,13 @@ class Settings(BaseSettings):
     gds_similarity_threshold: float = 0.7
     gds_top_k: int = 5
 
+    # gmr-linguistics — translation + embedding service. Deployed only in
+    # prod (singleton); non-prod consolidators point at the same URL.
+    linguistics_url: str = "http://gmr-linguistics.gmr.svc.cluster.local:8080"
+    linguistics_enabled: bool = True
+    linguistics_timeout_s: float = 60.0
+    linguistics_translation_backend: str = "mistral"
+    linguistics_embedding_backend: str = "mistral-embed"
+
 
 settings = Settings()
