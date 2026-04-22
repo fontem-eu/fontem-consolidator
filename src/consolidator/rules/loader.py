@@ -6,6 +6,7 @@ from src.consolidator.rules.authority.basic import (
     ExactNameCountryMatchAuthority,
     FuzzyNameSameCountryAuthority,
 )
+from src.consolidator.rules.authority.enrichment import TranslationEnrichmentAuthority
 from src.consolidator.rules.company.exact_identifiers import (
     ExactCikMatch,
     ExactLeiMatch,
@@ -45,6 +46,10 @@ def load_all() -> None:
     register(FuzzyNameSameCountry())
     register(GdsNodeSimilarityCompany())
     # Authority
+    # Enrichment runs first (confidence 1.0, tie-broken by insertion order):
+    # if the authority gets merged later in the same run, combined-property
+    # semantics preserve translations on the canonical node.
+    register(TranslationEnrichmentAuthority())
     register(ExactAuthorityIdMatch())
     register(GdsSameAsClusterCollapseAuthority())
     register(ExactNameCountryMatchAuthority())

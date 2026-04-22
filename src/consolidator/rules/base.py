@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal
 
-Action = Literal["merge", "link", "flag", "noop"]
+Action = Literal["merge", "link", "flag", "noop", "enrich"]
 
 
 @dataclass

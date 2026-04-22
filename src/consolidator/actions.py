@@ -53,6 +53,10 @@ async def execute(
         )
         return "conflict" if conflict else "flag"
 
+    if decision.action == "enrich":
+        await _enrich(driver, database, decision=decision)
+        return "enrich"
+
     return "noop"
 
 
@@ -178,4 +182,46 @@ async def _flag_same_as(
             detected_at=_now(),
             reviewed=reviewed,
             conflict=conflict,
+        )
+
+
+async def _enrich(
+    driver: AsyncDriver,
+    database: str,
+    *,
+    decision: Decision,
+) -> None:
+    """Write translation + embedding properties back to the node.
+
+    Translations are keyed as `name_<lang>`; the vector as `name_embedding`.
+    Uses a dynamic SET map rather than static keys so adding a new target
+    language in the service doesn't require a code change here.
+    """
+    label = decision.entity_type
+    id_key = "gmr_id" if label == "Company" else "authority_id"
+    translations = decision.details.get("translations") or {}
+    embedding = decision.details.get("embedding")
+    source_lang = decision.details.get("source_lang")
+
+    props: dict = {}
+    for lang, text in translations.items():
+        if isinstance(lang, str) and isinstance(text, str) and lang.isalpha():
+            props[f"name_{lang.lower()}"] = text
+    if embedding is not None:
+        props["name_embedding"] = embedding
+    if source_lang:
+        props["name_lang"] = source_lang
+    if not props:
+        return
+
+    async with driver.session(database=database) as session:
+        await session.run(
+            f"""
+            MATCH (n:{label} {{{id_key}: $id}})
+            SET n += $props,
+                n.multilingual_updated_at = $now
+            """,
+            id=decision.source_id,
+            props=props,
+            now=_now(),
         )

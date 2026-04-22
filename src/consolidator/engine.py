@@ -89,9 +89,13 @@ async def consolidate(
 
         rules_fired += 1
         for candidate in candidates:
-            if candidate.entity.id == entity.id:
-                continue  # never self-match
-            if candidate.entity.id in handled_targets:
+            is_self = candidate.entity.id == entity.id
+            # Per-entity enrichment rules legitimately target the entity
+            # itself (e.g. translation enrichment writes properties back).
+            # Other rules must never self-match.
+            if is_self and rule.action != "enrich":
+                continue
+            if not is_self and candidate.entity.id in handled_targets:
                 continue  # already had a higher-confidence rule fire
 
             decision: Decision = await rule.resolve(entity, candidate)
@@ -124,6 +128,9 @@ async def consolidate(
             # `conflict:true` flag lost to a later plain fuzzy flag.
             if outcome in ("auto_merge", "auto_link", "conflict", "flag"):
                 handled_targets.add(candidate.entity.id)
+            # Enrichment never participates in the short-circuit: it's
+            # orthogonal to matching — a merged pair can still want
+            # translations filled in.
 
     summary_outcome = _summarize(decisions_recorded)
     await audit.end_run(
