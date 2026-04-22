@@ -1,7 +1,7 @@
 fastapi==0.116.0
 uvicorn[standard]==0.32.1
 neo4j==5.27.0
-graphdatascience==1.17
+graphdatascience==1.18
 loguru==0.7.3
 pydantic==2.11.3
 pydantic-settings==2.7.1
