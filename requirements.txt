@@ -3,7 +3,7 @@ uvicorn[standard]==0.32.1
 neo4j==5.27.0
 graphdatascience==1.17
 loguru==0.7.3
-pydantic==2.11.2
+pydantic==2.11.3
 pydantic-settings==2.7.1
 httpx==0.28.1
 prometheus-client==0.21.1
