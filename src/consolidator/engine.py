@@ -35,11 +35,17 @@ async def consolidate(
     entity_id: str,
     triggered_by: str = "api",
     exclude_rule_prefix: str | None = None,
+    translation_backend: str | None = None,
 ) -> ConsolidationResult:
     """Run the rule pipeline for an entity. Always records a :ConsolidationRun with outcomes.
 
     exclude_rule_prefix: optional rule-name prefix to skip (e.g. "gds_" for
     fast bulk scans — GDS rules reproject the whole subgraph per call).
+
+    translation_backend: optional per-request override for the gmr-linguistics
+    translation backend (e.g. "mistral", "nllb-local"). Threaded into each
+    enrichment rule's candidate context; `None` falls back to the service
+    default configured on the consolidator pod.
     """
 
     entity = await entities.load(driver, database, entity_type=entity_type, entity_id=entity_id)
@@ -86,6 +92,10 @@ async def consolidate(
         candidates = await rule.find_candidates(entity)
         if not candidates:
             continue
+
+        if translation_backend and rule.action == "enrich":
+            for c in candidates:
+                c.context["translation_backend_override"] = translation_backend
 
         rules_fired += 1
         for candidate in candidates:
@@ -174,4 +184,6 @@ def _summarize(decisions: list[dict]) -> str:
         return "conflict_flagged"
     if any(d["outcome"] == "flag" for d in decisions):
         return "flagged"
+    if any(d["outcome"] == "enrich" for d in decisions):
+        return "enriched"
     return "noop"

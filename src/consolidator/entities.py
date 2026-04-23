@@ -1,8 +1,14 @@
-"""Load Company / Authority nodes as Entity objects."""
+"""Load Company / Authority / Contract nodes as Entity objects."""
 
 from neo4j import AsyncDriver
 
 from src.consolidator.rules.base import Entity
+
+_ID_KEY_BY_TYPE: dict[str, str] = {
+    "Company": "gmr_id",
+    "Authority": "authority_id",
+    "Contract": "ted_notice_id",
+}
 
 
 async def load(
@@ -12,7 +18,7 @@ async def load(
     entity_type: str,
     entity_id: str,
 ) -> Entity | None:
-    id_key = "gmr_id" if entity_type == "Company" else "authority_id"
+    id_key = _ID_KEY_BY_TYPE.get(entity_type, "authority_id")
     async with driver.session(database=database) as session:
         result = await session.run(
             f"MATCH (n:{entity_type} {{{id_key}: $id}}) RETURN n",

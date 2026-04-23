@@ -7,6 +7,7 @@ from src.consolidator.rules.authority.basic import (
     FuzzyNameSameCountryAuthority,
 )
 from src.consolidator.rules.authority.enrichment import TranslationEnrichmentAuthority
+from src.consolidator.rules.contract.enrichment import TranslationEnrichmentContract
 from src.consolidator.rules.company.exact_identifiers import (
     ExactCikMatch,
     ExactLeiMatch,
@@ -58,3 +59,5 @@ def load_all() -> None:
     register(ExactNameAnyCountryAuthority())
     register(FuzzyNameSameCountryAuthority())
     register(GdsNodeSimilarityAuthority())
+    # Contract — v1 multilingual: title-only translation.
+    register(TranslationEnrichmentContract())
