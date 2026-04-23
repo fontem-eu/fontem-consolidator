@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
+from src.api.lang import apply_translation, safe_lang
 from src.config import settings
 from src.consolidator.neo4j.client import get_driver
 
@@ -33,7 +34,16 @@ async def list_candidates(
     reviewed: bool = Query(default=False),
     limit: int = Query(default=50, le=500),
     cursor: str | None = Query(default=None),
+    lang: str | None = Query(default=None),
 ):
+    """List SAME_AS review candidates.
+
+    `lang` (ISO-639-1) swaps the `name` field of each entity for its
+    translated counterpart (`name_<lang>`) when one is present. Missing
+    translations or non-Authority entities fall through to the stored
+    `name` unchanged.
+    """
+    effective_lang = safe_lang(lang)
     driver = await get_driver()
     where = ["r.reviewed = $reviewed"]
     params: dict = {"reviewed": reviewed, "limit": limit}
@@ -76,9 +86,9 @@ async def list_candidates(
                 "detected_at": _iso(rec["detected_at"]),
                 "conflict": rec["conflict"],
                 "source_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
-                                  for k, v in rec["a_props"].items()},
+                                  for k, v in apply_translation(rec["a_props"], effective_lang).items()},
                 "target_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
-                                  for k, v in rec["b_props"].items()},
+                                  for k, v in apply_translation(rec["b_props"], effective_lang).items()},
             }
         )
     if len(out) == limit and out[-1]["detected_at"]:
