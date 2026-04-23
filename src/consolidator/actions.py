@@ -223,5 +223,7 @@ async def _enrich(
             """,
             id=decision.source_id,
             props=props,
-            now=_now(),
+            # Native datetime → stored as Neo4j DateTime (not ISO string), so
+            # `WHERE a.multilingual_updated_at > datetime(...)` filters work.
+            now=datetime.now(timezone.utc),
         )
