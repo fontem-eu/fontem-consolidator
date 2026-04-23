@@ -16,6 +16,16 @@ from neo4j import AsyncDriver
 from src.config import settings
 from src.consolidator.rules.base import Candidate, Decision, Entity
 
+_ID_KEY_BY_LABEL: dict[str, str] = {
+    "Company": "gmr_id",
+    "Authority": "authority_id",
+    "Contract": "ted_notice_id",
+}
+
+
+def _id_key(label: str) -> str:
+    return _ID_KEY_BY_LABEL.get(label, "authority_id")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -72,7 +82,7 @@ async def _merge(
     Writes a :MergeEvent audit node. Idempotent: if candidate no longer exists, no-op.
     """
     label = decision.entity_type
-    id_key = "gmr_id" if label == "Company" else "authority_id"
+    id_key = _id_key(label)
 
     async with driver.session(database=database) as session:
         # Check both exist
@@ -136,7 +146,7 @@ async def _link(
     rel_type: str,
 ) -> None:
     label = decision.entity_type
-    id_key = "gmr_id" if label == "Company" else "authority_id"
+    id_key = _id_key(label)
     async with driver.session(database=database) as session:
         await session.run(
             f"""
@@ -162,7 +172,7 @@ async def _flag_same_as(
     conflict: bool = False,
 ) -> None:
     label = decision.entity_type
-    id_key = "gmr_id" if label == "Company" else "authority_id"
+    id_key = _id_key(label)
     async with driver.session(database=database) as session:
         await session.run(
             f"""
@@ -191,14 +201,16 @@ async def _enrich(
     *,
     decision: Decision,
 ) -> None:
-    """Write translation + embedding properties back to the node.
+    """Write translation + (optional) embedding properties back to the node.
 
-    Translations are keyed as `name_<lang>`; the vector as `name_embedding`.
-    Uses a dynamic SET map rather than static keys so adding a new target
-    language in the service doesn't require a code change here.
+    Rules pick the field prefix via ``details["field"]`` — "name" for
+    Authority, "title" for Contract — and the executor writes
+    ``{field}_<lang>``, ``{field}_embedding``, ``{field}_lang``. Defaults
+    to "name" so older decisions without the field key stay valid.
     """
     label = decision.entity_type
-    id_key = "gmr_id" if label == "Company" else "authority_id"
+    id_key = _id_key(label)
+    field = decision.details.get("field") or "name"
     translations = decision.details.get("translations") or {}
     embedding = decision.details.get("embedding")
     source_lang = decision.details.get("source_lang")
@@ -206,11 +218,11 @@ async def _enrich(
     props: dict = {}
     for lang, text in translations.items():
         if isinstance(lang, str) and isinstance(text, str) and lang.isalpha():
-            props[f"name_{lang.lower()}"] = text
+            props[f"{field}_{lang.lower()}"] = text
     if embedding is not None:
-        props["name_embedding"] = embedding
+        props[f"{field}_embedding"] = embedding
     if source_lang:
-        props["name_lang"] = source_lang
+        props[f"{field}_lang"] = source_lang
     if not props:
         return
 

@@ -1,12 +1,9 @@
-"""TranslationEnrichmentRule — fills in missing name_<lang> + name_embedding on :Authority.
+"""TranslationEnrichmentContract — fills in missing title_<lang> on :Contract.
 
-Per-entity enrichment (not pairwise). The engine treats `action == "enrich"`
-as a signal that a self-targeted Decision is legitimate, and dispatches to
-the `_enrich` executor which writes the computed properties back to the node.
-
-Fails soft: if gmr-linguistics is unreachable or rate-limited, the rule emits
-no decisions and the consolidation run records a noop for it. A later run
-retries.
+Mirrors TranslationEnrichmentAuthority but writes translated titles on
+contracts instead of names on authorities. v1 scope: title only — no
+`description` (length often exceeds NLLB's 256-token window) and no
+embedding (171k+ contracts × 1024 floats is too costly for the value).
 """
 from __future__ import annotations
 
@@ -24,68 +21,53 @@ from src.consolidator.rules.multilingual_shared import source_lang_from_country
 
 
 def infer_source_lang(entity: Entity) -> str:
-    """Source language for translation prompts.
+    """Best-effort source language for a contract's title.
 
-    Order: explicit `name_lang` → country's primary official language → "en".
-    Without this fallback Polish/Czech/etc. authorities get treated as English
-    and Mistral returns the original string untranslated (garbage in, garbage
-    out).
+    TED doesn't carry a title_lang property today, so we infer from the
+    buyer's country code. Falls through to "en" for unknowns.
     """
-    explicit = (entity.properties.get("name_lang") or "").lower()
+    explicit = (entity.properties.get("title_lang") or "").lower()
     if explicit:
         return explicit
     return source_lang_from_country(entity.properties.get("country"))
 
 
 def missing_targets(entity: Entity) -> list[str]:
-    """Return the EU locales that have no name_<lang> set on the node."""
-    # Never translate a name into its own language — Mistral would round-trip
-    # the original and burn tokens for no benefit.
+    """Return EU locales that have no title_<lang> on the node yet."""
     src = infer_source_lang(entity)
     return [
         code for code in EU_OFFICIAL_LANGS
-        if code != src and not entity.properties.get(f"name_{code}")
+        if code != src and not entity.properties.get(f"title_{code}")
     ]
 
 
-def needs_embedding(entity: Entity) -> bool:
-    vec = entity.properties.get("name_embedding")
-    return not isinstance(vec, list) or len(vec) == 0
-
-
-class TranslationEnrichmentAuthority(Rule):
-    name = "translation_enrichment_authority"
+class TranslationEnrichmentContract(Rule):
+    name = "translation_enrichment_contract"
     description = (
-        "Fill missing EU-language translations (name_<lang>) and the "
-        "name_embedding vector on :Authority by calling gmr-linguistics. "
-        "Runs per-entity; never merges or flags."
+        "Fill missing EU-language translations (title_<lang>) on :Contract "
+        "by calling gmr-linguistics. Runs per-entity; never merges or flags. "
+        "v1: title only — description translation is deferred."
     )
-    entity_types = {"Authority"}
+    entity_types = {"Contract"}
     confidence = 1.0
     action = "enrich"
 
     async def applies(self, entity: Entity) -> bool:
         if not settings.linguistics_enabled:
             return False
-        if not entity.properties.get("name"):
+        if not entity.properties.get("title"):
             return False
-        return bool(missing_targets(entity)) or needs_embedding(entity)
+        return bool(missing_targets(entity))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        # Per-entity rule: the candidate is the entity itself. The engine
-        # special-cases self-candidates for action == "enrich" rules.
         return [Candidate(entity=entity, context={"enrichment": True})]
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
-        name = entity.properties["name"]
+        title = entity.properties["title"]
         src_lang = infer_source_lang(entity)
-
         targets = missing_targets(entity)
         translations: dict[str, str] = {}
-        embedding: list[float] | None = None
 
-        # Per-request override (set by the engine from the API request
-        # body); falls back to the service default.
         backend = (
             candidate.context.get("translation_backend_override")
             or settings.linguistics_translation_backend
@@ -100,52 +82,48 @@ class TranslationEnrichmentAuthority(Rule):
             ) as client:
                 if targets:
                     translations = await client.translate(
-                        text=name, source_lang=src_lang, targets=targets,
+                        text=title, source_lang=src_lang, targets=targets,
                     )
-                if needs_embedding(entity):
-                    embedding = await client.embed(text=name)
         except LinguisticsUnavailable as exc:
             logger.warning(
-                "translation_enrichment: linguistics unavailable for {id}: {exc}",
+                "translation_enrichment_contract: linguistics unavailable for {id}: {exc}",
                 id=entity.id, exc=exc,
             )
             return Decision(
                 rule_name=self.name, action="noop",
                 source_id=entity.id, target_id=entity.id, confidence=0.0,
-                entity_type="Authority",
+                entity_type="Contract",
                 details={"reason": "linguistics_unavailable"},
             )
         except LinguisticsError as exc:
             logger.error(
-                "translation_enrichment: linguistics hard error for {id}: {exc}",
+                "translation_enrichment_contract: linguistics hard error for {id}: {exc}",
                 id=entity.id, exc=exc,
             )
             return Decision(
                 rule_name=self.name, action="noop",
                 source_id=entity.id, target_id=entity.id, confidence=0.0,
-                entity_type="Authority",
+                entity_type="Contract",
                 details={"reason": "linguistics_error", "message": str(exc)},
             )
 
-        if not translations and embedding is None:
-            # Nothing to do — entity was already complete between applies() and here.
+        if not translations:
             return Decision(
                 rule_name=self.name, action="noop",
                 source_id=entity.id, target_id=entity.id, confidence=0.0,
-                entity_type="Authority", details={"reason": "already_complete"},
+                entity_type="Contract", details={"reason": "already_complete"},
             )
 
         return Decision(
             rule_name=self.name,
             action="enrich",
             source_id=entity.id,
-            target_id=entity.id,  # self-enrichment
+            target_id=entity.id,
             confidence=1.0,
-            entity_type="Authority",
+            entity_type="Contract",
             details={
-                "field": "name",
+                "field": "title",
                 "translations": translations,
-                "embedding": embedding,
                 "source_lang": src_lang,
             },
         )
