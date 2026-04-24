@@ -205,15 +205,27 @@ async def _enrich(
 
     Rules pick the field prefix via ``details["field"]`` — "name" for
     Authority, "title" for Contract — and the executor writes
-    ``{field}_<lang>``, ``{field}_embedding``, ``{field}_lang``. Defaults
-    to "name" so older decisions without the field key stay valid.
+    ``{field}_<lang>``, ``{field}_embedding``, ``{field}_embedding_encoder``,
+    ``{field}_embedding_dim``, ``{field}_lang``. Defaults to "name" so
+    older decisions without the field key stay valid.
+
+    When an embedding is present, an encoder identity MUST also be
+    present. Un-versioned embeddings would be un-comparable silently
+    down the line — we refuse to write them rather than poison the cache.
     """
     label = decision.entity_type
     id_key = _id_key(label)
     field = decision.details.get("field") or "name"
     translations = decision.details.get("translations") or {}
     embedding = decision.details.get("embedding")
+    embedding_encoder = decision.details.get("embedding_encoder")
     source_lang = decision.details.get("source_lang")
+
+    if embedding is not None and not embedding_encoder:
+        raise ValueError(
+            "_enrich: embedding present but embedding_encoder missing; "
+            "refusing to write an un-versioned vector",
+        )
 
     props: dict = {}
     for lang, text in translations.items():
@@ -221,6 +233,8 @@ async def _enrich(
             props[f"{field}_{lang.lower()}"] = text
     if embedding is not None:
         props[f"{field}_embedding"] = embedding
+        props[f"{field}_embedding_encoder"] = embedding_encoder
+        props[f"{field}_embedding_dim"] = len(embedding)
     if source_lang:
         props[f"{field}_lang"] = source_lang
     if not props:

@@ -68,14 +68,28 @@ class LinguisticsClient:
         })
         return dict(resp.get("translations", {}))
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> tuple[list[float], str]:
+        """Return (vector, encoder_id).
+
+        encoder_id is the signed-mirror identifier the linguistics service
+        stamps on every response — consumers store it alongside the vector
+        so that cross-encoder comparisons can be rejected downstream. A
+        missing encoder_id from the service is treated as a hard error;
+        we never write an un-versioned vector.
+        """
         resp = await self._post_json("/embed", {
             "text": text, "backend": self.embedding_backend,
         })
         vec = resp.get("vector")
         if not isinstance(vec, list) or not vec:
-            raise LinguisticsError("malformed /embed response")
-        return [float(x) for x in vec]
+            raise LinguisticsError("malformed /embed response: missing vector")
+        encoder_id = resp.get("encoder_id")
+        if not isinstance(encoder_id, str) or not encoder_id:
+            raise LinguisticsError(
+                "malformed /embed response: missing encoder_id — refusing "
+                "to write an un-versioned embedding",
+            )
+        return [float(x) for x in vec], encoder_id
 
     async def _post_json(self, path: str, payload: dict) -> dict:
         try:
