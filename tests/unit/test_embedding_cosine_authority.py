@@ -108,10 +108,13 @@ def _mock_driver_with_records(records: list[dict]) -> MagicMock:
 
 
 async def test_find_candidates_maps_vector_index_results(monkeypatch):
-    monkeypatch.setattr(_settings, "embedding_cosine_top_k", 10)
-    monkeypatch.setattr(_settings, "embedding_cosine_threshold", 0.75)
+    monkeypatch.setattr(_settings, "embedding_cosine_top_k", 3)
+    monkeypatch.setattr(_settings, "embedding_cosine_threshold", 0.90)
+    monkeypatch.setattr(_settings, "embedding_cosine_jaro_winkler_min", 0.30)
+    monkeypatch.setattr(_settings, "embedding_cosine_cross_country_only", True)
 
-    # Two candidate rows returned from the vector index
+    # Two candidate rows returned from the vector index (cosine-filtered +
+    # JW-filtered + cross-country-filtered at the database layer).
     node_a = {
         "authority_id": "AUTH-42", "name": "Ministero della Difesa",
         "country": "ITA", "name_embedding_encoder": ENC,
@@ -121,8 +124,8 @@ async def test_find_candidates_maps_vector_index_results(monkeypatch):
         "country": "FRA", "name_embedding_encoder": ENC,
     }
     records = [
-        {"n": node_a, "s": 0.92},
-        {"n": node_b, "s": 0.81},
+        {"n": node_a, "s": 0.94},
+        {"n": node_b, "s": 0.91},
     ]
     driver, session = _mock_driver_with_records(records)
 
@@ -137,16 +140,22 @@ async def test_find_candidates_maps_vector_index_results(monkeypatch):
 
     assert len(cands) == 2
     assert [c.entity.id for c in cands] == ["AUTH-42", "AUTH-99"]
-    assert cands[0].context["cosine_score"] == 0.92
-    assert cands[1].context["cosine_score"] == 0.81
+    assert cands[0].context["cosine_score"] == 0.94
+    assert cands[1].context["cosine_score"] == 0.91
 
     # Vector-index query was built with the right knobs
     args, kwargs = session.run.call_args
     assert "db.index.vector.queryNodes" in args[0]
-    assert kwargs["k"] == 11  # top_k + 1 for self-exclusion headroom
+    assert "apoc.text.jaroWinkler" in args[0]
+    assert "cross_country_only" in args[0]
+    assert kwargs["k"] == 4  # top_k (3) + 1 for self-exclusion headroom
     assert kwargs["vec"] == VEC
-    assert kwargs["threshold"] == 0.75
+    assert kwargs["threshold"] == 0.90
     assert kwargs["enc"] == ENC
+    assert kwargs["jw_min"] == 0.30
+    assert kwargs["cross_country_only"] is True
+    assert kwargs["self_name"] == "Ministry of Defence"
+    assert kwargs["self_country"] == "IRL"
 
 
 async def test_find_candidates_empty_when_index_returns_nothing(monkeypatch):
