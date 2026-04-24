@@ -65,9 +65,23 @@ class EmbeddingCosineSameAuthority(Rule):
         driver = await get_driver()
         vec = entity.properties["name_embedding"]
         enc = entity.properties["name_embedding_encoder"]
+        self_name = entity.properties.get("name") or ""
+        self_country = entity.properties.get("country") or ""
         top_k = settings.embedding_cosine_top_k
         threshold = settings.embedding_cosine_threshold
+        jw_min = settings.embedding_cosine_jaro_winkler_min
+        cross_country_only = settings.embedding_cosine_cross_country_only
 
+        # The filter stack, in cheap-before-expensive order:
+        #   1. self_id ≠ candidate (trivial)
+        #   2. encoder_id match (indexed string equality)
+        #   3. cosine ≥ threshold (already applied by the vector index)
+        #   4. cross-country gate (string equality, optional)
+        #   5. minimum Jaro-Winkler on raw names — forces at least weak
+        #      token overlap. Blocks "music academy ↔ music academy"
+        #      role-matches with zero name resemblance.
+        #   6. OPTIONAL MATCH to drop human-reviewed pairs.
+        # jaroWinkler lives in APOC (already required by other rules).
         query = """
         CALL db.index.vector.queryNodes(
             'authority_name_embedding_idx', $k, $vec
@@ -75,10 +89,14 @@ class EmbeddingCosineSameAuthority(Rule):
         WHERE node.authority_id <> $self_id
           AND node.name_embedding_encoder = $enc
           AND score >= $threshold
+          AND ($cross_country_only = false
+               OR coalesce(node.country, '') <> coalesce($self_country, ''))
+          AND apoc.text.jaroWinkler(
+                toLower(coalesce(node.name, '')),
+                toLower($self_name)
+              ) >= $jw_min
         OPTIONAL MATCH (s:Authority {authority_id: $self_id})-[r:SAME_AS]->(node)
         WITH node, score, r
-        // Skip pairs a human already reviewed; re-flagging them is
-        // noise. New pairs (no edge yet) and unreviewed edges both pass.
         WHERE r IS NULL OR coalesce(r.reviewed, false) = false
         RETURN node AS n, score AS s
         ORDER BY s DESC
@@ -89,6 +107,8 @@ class EmbeddingCosineSameAuthority(Rule):
             result = await session.run(
                 query, k=top_k + 1, vec=vec,
                 self_id=entity.id, enc=enc, threshold=threshold,
+                self_name=self_name, self_country=self_country,
+                jw_min=jw_min, cross_country_only=cross_country_only,
             )
             records = [record async for record in result]
 

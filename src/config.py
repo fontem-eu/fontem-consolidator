@@ -29,9 +29,21 @@ class Settings(BaseSettings):
 
     # embedding_cosine_authority rule — flags Authority duplicates whose
     # LaBSE name-embedding cosine is above threshold. Never auto-merges.
+    #
+    # Calibration history:
+    # - First canary (threshold=0.75, top_k=10) over-matched: LaBSE clusters
+    #   by institutional role, so "music academy in X" ≈ "music academy in Y"
+    #   at ~0.89. Role-lookalike pairs dominated the mid band.
+    # - Second pass (current): 0.90 threshold cuts ~75% of the noise; top_k
+    #   3 prevents quota-saturation per entity; a minimum Jaro-Winkler on the
+    #   raw names forces some token overlap, rejecting pure role matches.
+    #   cross-country-only because same-country string duplicates are already
+    #   caught by fuzzy_name_same_country_authority.
     embedding_cosine_enabled: bool = True
-    embedding_cosine_threshold: float = 0.75
-    embedding_cosine_top_k: int = 10
+    embedding_cosine_threshold: float = 0.90
+    embedding_cosine_top_k: int = 3
+    embedding_cosine_jaro_winkler_min: float = 0.30
+    embedding_cosine_cross_country_only: bool = True
     # Comma-separated list of encoder-ids whose vectors are safe to
     # compare. Cross-encoder cosines are meaningless; this is the guard.
     # If a row's encoder_id isn't in this list the rule abstains.
