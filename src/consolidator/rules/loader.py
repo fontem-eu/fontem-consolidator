@@ -6,6 +6,9 @@ from src.consolidator.rules.authority.basic import (
     ExactNameCountryMatchAuthority,
     FuzzyNameSameCountryAuthority,
 )
+from src.consolidator.rules.authority.embedding_similarity import (
+    EmbeddingCosineSameAuthority,
+)
 from src.consolidator.rules.authority.enrichment import TranslationEnrichmentAuthority
 from src.consolidator.rules.contract.enrichment import TranslationEnrichmentContract
 from src.consolidator.rules.company.exact_identifiers import (
@@ -57,6 +60,10 @@ def load_all() -> None:
     # Cross-country same-name flag for EU bodies (EEAS, JRC, eu-LISA, …).
     # Confidence 0.90 — runs after same-country exact (0.95) and below fuzzy.
     register(ExactNameAnyCountryAuthority())
+    # LaBSE cosine-similarity flag (confidence 0.87). Catches cross-
+    # lingual duplicates (e.g. Italian / English names of the same
+    # ministry) that string rules miss. Never auto-merges.
+    register(EmbeddingCosineSameAuthority())
     register(FuzzyNameSameCountryAuthority())
     register(GdsNodeSimilarityAuthority())
     # Contract — v1 multilingual: title-only translation.

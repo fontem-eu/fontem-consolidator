@@ -27,5 +27,15 @@ class Settings(BaseSettings):
     linguistics_translation_backend: str = "mistral"
     linguistics_embedding_backend: str = "mistral-embed"
 
+    # embedding_cosine_authority rule — flags Authority duplicates whose
+    # LaBSE name-embedding cosine is above threshold. Never auto-merges.
+    embedding_cosine_enabled: bool = True
+    embedding_cosine_threshold: float = 0.75
+    embedding_cosine_top_k: int = 10
+    # Comma-separated list of encoder-ids whose vectors are safe to
+    # compare. Cross-encoder cosines are meaningless; this is the guard.
+    # If a row's encoder_id isn't in this list the rule abstains.
+    embedding_cosine_accepted_encoders: str = "labse@1.0.0-836121a"
+
 
 settings = Settings()
