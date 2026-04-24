@@ -116,10 +116,16 @@ async def test_find_candidates_returns_self_candidate():
 def _mock_linguistics(
     translations: dict[str, str] | None = None,
     embedding: list[float] | None = None,
+    encoder_id: str | None = "labse@1.0.0-test000",
     status: int = 200,
     raise_transport: bool = False,
 ):
-    """Build an httpx.MockTransport that answers /translate + /embed."""
+    """Build an httpx.MockTransport that answers /translate + /embed.
+
+    Pass ``encoder_id=None`` to simulate a misbehaving linguistics service
+    that omits the encoder identity — the client treats that as a hard
+    error and the rule must propagate it.
+    """
 
     def handler(req: httpx.Request) -> httpx.Response:
         if raise_transport:
@@ -131,11 +137,14 @@ def _mock_linguistics(
                 "partial_cached_targets": [],
             })
         if req.url.path.endswith("/embed"):
-            return httpx.Response(status, json={
-                "cached": False, "backend": "mistral-embed",
+            body: dict = {
+                "cached": False, "backend": "labse-local",
                 "dim": len(embedding or [0.1] * 1024),
                 "vector": embedding or [0.1] * 1024,
-            })
+            }
+            if encoder_id is not None:
+                body["encoder_id"] = encoder_id
+            return httpx.Response(status, json=body)
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -160,6 +169,7 @@ async def test_resolve_happy_writes_translations_and_embedding(monkeypatch):
     assert decision.source_id == decision.target_id == e.id
     assert decision.details["translations"]["en"] == "[en]X"
     assert decision.details["embedding"] == [0.5] * 8
+    assert decision.details["embedding_encoder"] == "labse@1.0.0-test000"
     assert decision.details["source_lang"] == "it"
 
 
@@ -193,6 +203,40 @@ async def test_resolve_failsoft_on_503(monkeypatch):
     decision = await rule.resolve(e, (await rule.find_candidates(e))[0])
     assert decision.action == "noop"
     assert decision.details["reason"] == "linguistics_unavailable"
+
+
+# ── encoder-id handling (signed-mirror supply chain) ──────────────
+
+async def test_embed_returns_vector_and_encoder_id(monkeypatch):
+    transport = _mock_linguistics(embedding=[0.1, 0.2, 0.3], encoder_id="labse@1.0.0-abcdef0")
+
+    async def _fake_aenter(self):
+        self._client = httpx.AsyncClient(transport=transport, base_url=self.base_url)
+        return self
+
+    monkeypatch.setattr(LinguisticsClient, "__aenter__", _fake_aenter)
+
+    async with LinguisticsClient(base_url="http://x") as client:
+        vec, enc = await client.embed(text="foo")
+
+    assert vec == [0.1, 0.2, 0.3]
+    assert enc == "labse@1.0.0-abcdef0"
+
+
+async def test_embed_rejects_missing_encoder_id(monkeypatch):
+    from src.consolidator.clients.linguistics import LinguisticsError
+
+    transport = _mock_linguistics(embedding=[0.1], encoder_id=None)
+
+    async def _fake_aenter(self):
+        self._client = httpx.AsyncClient(transport=transport, base_url=self.base_url)
+        return self
+
+    monkeypatch.setattr(LinguisticsClient, "__aenter__", _fake_aenter)
+
+    async with LinguisticsClient(base_url="http://x") as client:
+        with pytest.raises(LinguisticsError, match="encoder_id"):
+            await client.embed(text="foo")
 
 
 # ── registered in loader at the top of Authority queue ────────────

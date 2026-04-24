@@ -83,6 +83,7 @@ class TranslationEnrichmentAuthority(Rule):
         targets = missing_targets(entity)
         translations: dict[str, str] = {}
         embedding: list[float] | None = None
+        encoder_id: str | None = None
 
         # Per-request override (set by the engine from the API request
         # body); falls back to the service default.
@@ -103,7 +104,7 @@ class TranslationEnrichmentAuthority(Rule):
                         text=name, source_lang=src_lang, targets=targets,
                     )
                 if needs_embedding(entity):
-                    embedding = await client.embed(text=name)
+                    embedding, encoder_id = await client.embed(text=name)
         except LinguisticsUnavailable as exc:
             logger.warning(
                 "translation_enrichment: linguistics unavailable for {id}: {exc}",
@@ -146,6 +147,7 @@ class TranslationEnrichmentAuthority(Rule):
                 "field": "name",
                 "translations": translations,
                 "embedding": embedding,
+                "embedding_encoder": encoder_id,
                 "source_lang": src_lang,
             },
         )
