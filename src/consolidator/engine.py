@@ -131,12 +131,16 @@ async def consolidate(
                     "confidence": decision.confidence,
                 }
             )
-            # Once a (source, target) pair has produced any concrete decision,
-            # short-circuit: lower-confidence rules would only overwrite the
-            # :SAME_AS edge's properties (since MERGE is idempotent on the pair)
-            # and drown the higher-confidence outcome — in particular a
-            # `conflict:true` flag lost to a later plain fuzzy flag.
-            if outcome in ("auto_merge", "auto_link", "conflict", "flag"):
+            # Short-circuit only on graph-mutating outcomes:
+            # `auto_merge` collapses the target node, `auto_link` writes a
+            # named relationship — running another rule on the same target
+            # afterwards is undefined.
+            #
+            # `flag` and `conflict` are SAME_AS-edge writes that now APPEND
+            # a detection to r.detections, so multiple rules firing on the
+            # same pair leave the reviewer richer evidence — exact-name +
+            # cosine + fuzzy can all be recorded for one pair.
+            if outcome in ("auto_merge", "auto_link"):
                 handled_targets.add(candidate.entity.id)
             # Enrichment never participates in the short-circuit: it's
             # orthogonal to matching — a merged pair can still want
