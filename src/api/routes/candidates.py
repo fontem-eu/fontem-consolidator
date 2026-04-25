@@ -62,6 +62,15 @@ async def list_candidates(
               r.confidence AS confidence,
               r.method AS rule_name,
               r.detected_at AS detected_at,
+              // Each rule that has flagged this pair appends an entry to
+              // r.detections; older edges (pre-multi-rule schema) won't
+              // have it, so we coalesce to a single-element list built
+              // from the legacy summary fields.
+              coalesce(r.detections, [{{
+                rule_name: r.method,
+                confidence: r.confidence,
+                detected_at: r.detected_at
+              }}]) AS detections,
               coalesce(r.conflict, false) AS conflict,
               labels(a) AS a_labels, a {{.*}} AS a_props,
               labels(b) AS b_labels, b {{.*}} AS b_props
@@ -76,14 +85,28 @@ async def list_candidates(
         a_type = "Company" if "Company" in rec["a_labels"] else "Authority"
         source_id = rec["a_props"].get("gmr_id") or rec["a_props"].get("authority_id")
         target_id = rec["b_props"].get("gmr_id") or rec["b_props"].get("authority_id")
+        # detections list — coerce any embedded Neo4j DateTime values to ISO.
+        detections = [
+            {
+                "rule_name": d.get("rule_name"),
+                "confidence": d.get("confidence"),
+                "detected_at": _iso(d.get("detected_at")),
+            }
+            for d in (rec["detections"] or [])
+            if d.get("rule_name") is not None
+        ]
         out.append(
             {
                 "from_id": source_id,
                 "to_id": target_id,
                 "entity_type": a_type,
+                # Legacy summary fields — still populated, kept for
+                # backward compat. UI can prefer `detections` when
+                # rendering multi-rule evidence.
                 "rule_name": rec["rule_name"],
                 "confidence": rec["confidence"],
                 "detected_at": _iso(rec["detected_at"]),
+                "detections": detections,
                 "conflict": rec["conflict"],
                 "source_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
                                   for k, v in apply_translation(rec["a_props"], effective_lang).items()},

@@ -171,6 +171,23 @@ async def _flag_same_as(
     reviewed: bool,
     conflict: bool = False,
 ) -> None:
+    """Append a detection to the :SAME_AS edge for human review.
+
+    Schema:
+      r.detections : list of maps {rule_name, confidence, detected_at}
+                     — one entry per rule that has flagged the pair.
+                     Re-runs of the same rule replace its prior entry
+                     in place.
+      r.confidence : highest cosine across all detections (summary).
+      r.method     : rule_name of the highest-confidence detection.
+      r.detected_at: detected_at of the highest-confidence detection.
+      r.reviewed   : case-state, last writer wins (false until human
+                     marks reviewed).
+      r.conflict   : case-state, last writer wins.
+
+    The summary fields stay populated for backward compat with callers
+    that read a single method/confidence (older UI, audit queries).
+    """
     label = decision.entity_type
     id_key = _id_key(label)
     async with driver.session(database=database) as session:
@@ -179,11 +196,33 @@ async def _flag_same_as(
             MATCH (a:{label} {{{id_key}: $source_id}})
             MATCH (b:{label} {{{id_key}: $target_id}})
             MERGE (a)-[r:SAME_AS]->(b)
-            SET r.confidence = $confidence,
-                r.method = $rule_name,
-                r.detected_at = $detected_at,
-                r.reviewed = $reviewed,
-                r.conflict = $conflict
+            // Replace any prior detection from the same rule with the
+            // new one; append for net-new rules.
+            WITH r,
+              [d IN coalesce(r.detections, []) WHERE d.rule_name <> $rule_name] +
+                [{{rule_name: $rule_name, confidence: $confidence, detected_at: $detected_at}}]
+                AS new_detections
+            SET r.detections = new_detections,
+                // reviewed is sticky once true: a human marking the
+                // case via /decide (reviewed=true) must not be undone
+                // by a later rule firing.
+                r.reviewed = (
+                    CASE WHEN coalesce(r.reviewed, false) THEN true
+                         ELSE $reviewed END
+                ),
+                // conflict is sticky once true: any rule reporting a
+                // conflict on the pair flags it, even if a different
+                // rule later fires without conflict.
+                r.conflict = (coalesce(r.conflict, false) OR $conflict)
+            // Recompute summary from the full list so a stale prior
+            // entry from the same rule is correctly replaced.
+            WITH r, new_detections,
+              reduce(top = new_detections[0], d IN new_detections |
+                CASE WHEN d.confidence > top.confidence THEN d ELSE top END
+              ) AS top
+            SET r.confidence = top.confidence,
+                r.method = top.rule_name,
+                r.detected_at = top.detected_at
             """,
             source_id=decision.source_id,
             target_id=decision.target_id,

@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     embedding_cosine_enabled: bool = True
     embedding_cosine_threshold: float = 0.90
     embedding_cosine_top_k: int = 3
-    embedding_cosine_jaro_winkler_min: float = 0.30
+    embedding_cosine_jaro_winkler_min: float = 0.45
     embedding_cosine_cross_country_only: bool = True
     # Comma-separated list of encoder-ids whose vectors are safe to
     # compare. Cross-encoder cosines are meaningless; this is the guard.

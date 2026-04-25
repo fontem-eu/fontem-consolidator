@@ -77,9 +77,12 @@ async def test_no_prefix_runs_all_rules():
         result = await engine.consolidate(
             AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
         )
-    # Both rules evaluated; second produces a duplicate target that the
-    # short-circuit swallows before the action runs, but rules_fired counts
-    # rules whose find_candidates returned ≥1 candidate regardless.
+    # Both rules evaluated AND both actions fired — flag no longer
+    # short-circuits, each rule appends a detection to r.detections so
+    # the reviewer sees the full evidence on the SAME_AS edge. Only
+    # graph-mutating outcomes (auto_merge / auto_link) still short-circuit.
     assert result.rules_fired == 2
-    # Only one action recorded thanks to short-circuit
-    assert len(result.decisions) == 1
+    assert len(result.decisions) == 2
+    assert {d["rule_name"] for d in result.decisions} == {
+        "gds_node_similarity_company", "exact_lei_match",
+    }

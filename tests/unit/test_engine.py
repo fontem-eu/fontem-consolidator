@@ -85,13 +85,13 @@ class _ConflictRule(Rule):
 
 
 @pytest.mark.asyncio
-async def test_engine_short_circuits_after_conflict():
-    """Regression: once a higher-confidence rule flags a pair as conflict,
-    later rules on the same (source, target) must NOT run — otherwise their
-    MERGE on :SAME_AS would overwrite the conflict flag."""
+async def test_engine_lets_multiple_flag_rules_fire_on_same_pair():
+    """Engine no longer short-circuits on flag/conflict outcomes — both
+    rules fire so each can append a detection to r.detections. The
+    SAME_AS edge writer (_flag_same_as) makes r.conflict sticky-true so
+    the higher-confidence rule's conflict signal isn't undone."""
     conflict = _ConflictRule()
     later_fuzzy = _FakeRule()
-    # list_rules returns confidence-sorted, so conflict runs first
     with patch(
         "src.consolidator.engine.list_rules", return_value=[conflict, later_fuzzy]
     ), patch(
@@ -109,10 +109,41 @@ async def test_engine_short_circuits_after_conflict():
             AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
         )
 
-    # Only the conflict rule's action executed; the fuzzy follow-up was skipped
+    # BOTH rules executed — flag/conflict no longer short-circuit.
+    assert exec_mock.await_count == 2
+    outcomes = [d["outcome"] for d in result.decisions]
+    assert outcomes == ["conflict", "flag"]
+
+
+@pytest.mark.asyncio
+async def test_engine_still_short_circuits_after_auto_merge():
+    """auto_merge collapses the target node — running another rule on
+    the same target afterward is undefined behaviour, so the engine
+    must still short-circuit."""
+    class _MergeRule(_FakeRule):
+        action = "merge"
+    merge = _MergeRule()
+    later_fuzzy = _FakeRule()
+    with patch(
+        "src.consolidator.engine.list_rules", return_value=[merge, later_fuzzy]
+    ), patch(
+        "src.consolidator.engine.entities.load",
+        AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
+    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-2")), patch(
+        "src.consolidator.engine.audit.end_run", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.audit.record_decision", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.actions.execute",
+        AsyncMock(side_effect=["auto_merge", "flag"]),
+    ) as exec_mock:
+        await engine.consolidate(
+            AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
+        )
+
+    # Only the merge fired — fuzzy was suppressed because the target
+    # node is gone.
     assert exec_mock.await_count == 1
-    assert len(result.decisions) == 1
-    assert result.decisions[0]["outcome"] == "conflict"
 
 
 @pytest.mark.asyncio
