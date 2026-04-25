@@ -62,15 +62,13 @@ async def list_candidates(
               r.confidence AS confidence,
               r.method AS rule_name,
               r.detected_at AS detected_at,
-              // Each rule that has flagged this pair appends an entry to
-              // r.detections; older edges (pre-multi-rule schema) won't
-              // have it, so we coalesce to a single-element list built
-              // from the legacy summary fields.
-              coalesce(r.detections, [{{
-                rule_name: r.method,
-                confidence: r.confidence,
-                detected_at: r.detected_at
-              }}]) AS detections,
+              // Per-rule detections are stored as three parallel arrays
+              // because Neo4j relationship props can't hold list<map>.
+              // Coalesce against legacy edges (single rule, summary only)
+              // by falling back to a one-element list built from r.method.
+              coalesce(r.detection_rules,       [r.method])      AS det_rules,
+              coalesce(r.detection_confidences, [r.confidence])  AS det_confs,
+              coalesce(r.detection_dates,       [r.detected_at]) AS det_dates,
               coalesce(r.conflict, false) AS conflict,
               labels(a) AS a_labels, a {{.*}} AS a_props,
               labels(b) AS b_labels, b {{.*}} AS b_props
@@ -85,15 +83,17 @@ async def list_candidates(
         a_type = "Company" if "Company" in rec["a_labels"] else "Authority"
         source_id = rec["a_props"].get("gmr_id") or rec["a_props"].get("authority_id")
         target_id = rec["b_props"].get("gmr_id") or rec["b_props"].get("authority_id")
-        # detections list — coerce any embedded Neo4j DateTime values to ISO.
+        # Zip the three parallel arrays back into a list of objects for
+        # the wire format. Skip entries with a null rule_name (defensive
+        # against half-populated legacy edges).
         detections = [
-            {
-                "rule_name": d.get("rule_name"),
-                "confidence": d.get("confidence"),
-                "detected_at": _iso(d.get("detected_at")),
-            }
-            for d in (rec["detections"] or [])
-            if d.get("rule_name") is not None
+            {"rule_name": rn, "confidence": rc, "detected_at": _iso(dt)}
+            for rn, rc, dt in zip(
+                rec["det_rules"] or [],
+                rec["det_confs"] or [],
+                rec["det_dates"] or [],
+            )
+            if rn is not None
         ]
         out.append(
             {

@@ -54,18 +54,14 @@ def test_list_candidates_returns_shape(client):
                     "confidence": 0.94,
                     "rule_name": "fuzzy_name_same_country",
                     "detected_at": "2026-04-20T12:00:00Z",
-                    "detections": [
-                        {
-                            "rule_name": "fuzzy_name_same_country",
-                            "confidence": 0.94,
-                            "detected_at": "2026-04-20T12:00:00Z",
-                        },
-                        {
-                            "rule_name": "embedding_cosine_authority",
-                            "confidence": 0.87,
-                            "detected_at": "2026-04-20T12:05:00Z",
-                        },
+                    # Parallel arrays — Neo4j can't store list<map> on a
+                    # relationship, so the route zips these on the way out.
+                    "det_rules": [
+                        "fuzzy_name_same_country",
+                        "embedding_cosine_authority",
                     ],
+                    "det_confs": [0.94, 0.87],
+                    "det_dates": ["2026-04-20T12:00:00Z", "2026-04-20T12:05:00Z"],
                     "conflict": False,
                     "a_labels": ["Company"],
                     "a_props": {"gmr_id": "gmr-A", "name": "Acme"},
@@ -93,8 +89,9 @@ def test_list_candidates_returns_shape(client):
 
 
 def test_list_candidates_back_fills_detections_for_legacy_edges(client):
-    """Edges written before the multi-rule schema have no r.detections.
-    The Cypher coalesces a single-element list from the legacy summary."""
+    """Edges written before the multi-rule schema have no
+    r.detection_rules/confidences/dates. The Cypher coalesces them to
+    one-element arrays built from the legacy summary fields."""
     c, _ = client
     driver = _stub_session(
         [
@@ -103,14 +100,11 @@ def test_list_candidates_back_fills_detections_for_legacy_edges(client):
                     "confidence": 0.92,
                     "rule_name": "exact_name_country_match_authority",
                     "detected_at": "2026-04-15T08:00:00Z",
-                    # Coalesced server-side; the route still receives a list.
-                    "detections": [
-                        {
-                            "rule_name": "exact_name_country_match_authority",
-                            "confidence": 0.92,
-                            "detected_at": "2026-04-15T08:00:00Z",
-                        },
-                    ],
+                    # Server-side coalesce simulated: legacy edge with no
+                    # parallel arrays returns single-element lists.
+                    "det_rules": ["exact_name_country_match_authority"],
+                    "det_confs": [0.92],
+                    "det_dates": ["2026-04-15T08:00:00Z"],
                     "conflict": False,
                     "a_labels": ["Authority"],
                     "a_props": {"authority_id": "AUTH-A", "name": "X"},
