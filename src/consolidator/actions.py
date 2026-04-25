@@ -173,20 +173,17 @@ async def _flag_same_as(
 ) -> None:
     """Append a detection to the :SAME_AS edge for human review.
 
-    Schema:
-      r.detections : list of maps {rule_name, confidence, detected_at}
-                     — one entry per rule that has flagged the pair.
-                     Re-runs of the same rule replace its prior entry
-                     in place.
-      r.confidence : highest cosine across all detections (summary).
-      r.method     : rule_name of the highest-confidence detection.
-      r.detected_at: detected_at of the highest-confidence detection.
-      r.reviewed   : case-state, last writer wins (false until human
-                     marks reviewed).
-      r.conflict   : case-state, last writer wins.
-
-    The summary fields stay populated for backward compat with callers
-    that read a single method/confidence (older UI, audit queries).
+    Schema (Neo4j relationships only allow primitives + arrays of
+    primitives, so the per-rule detection list is stored as three
+    parallel arrays — readers zip them):
+      r.detection_rules       : list[str]   ordered, no duplicates
+      r.detection_confidences : list[float] aligned to detection_rules
+      r.detection_dates       : list[str]   aligned (ISO timestamps)
+      r.confidence            : highest of detection_confidences (summary)
+      r.method                : rule_name at the max-confidence index
+      r.detected_at           : detected_at at the max-confidence index
+      r.reviewed              : sticky-once-true (human via /decide)
+      r.conflict              : sticky-once-true (any rule reporting it)
     """
     label = decision.entity_type
     id_key = _id_key(label)
@@ -196,33 +193,37 @@ async def _flag_same_as(
             MATCH (a:{label} {{{id_key}: $source_id}})
             MATCH (b:{label} {{{id_key}: $target_id}})
             MERGE (a)-[r:SAME_AS]->(b)
-            // Replace any prior detection from the same rule with the
-            // new one; append for net-new rules.
+            // Indices of existing entries to KEEP (those that aren't
+            // for the rule firing now — that one's about to be
+            // replaced/appended).
             WITH r,
-              [d IN coalesce(r.detections, []) WHERE d.rule_name <> $rule_name] +
-                [{{rule_name: $rule_name, confidence: $confidence, detected_at: $detected_at}}]
-                AS new_detections
-            SET r.detections = new_detections,
-                // reviewed is sticky once true: a human marking the
-                // case via /decide (reviewed=true) must not be undone
-                // by a later rule firing.
+              [i IN range(0, size(coalesce(r.detection_rules, [])) - 1)
+                 WHERE coalesce(r.detection_rules, [])[i] <> $rule_name
+              ] AS keep
+            SET r.detection_rules =
+                  [i IN keep | r.detection_rules[i]] + [$rule_name],
+                r.detection_confidences =
+                  [i IN keep | r.detection_confidences[i]] + [$confidence],
+                r.detection_dates =
+                  [i IN keep | r.detection_dates[i]] + [$detected_at],
                 r.reviewed = (
-                    CASE WHEN coalesce(r.reviewed, false) THEN true
-                         ELSE $reviewed END
+                  CASE WHEN coalesce(r.reviewed, false) THEN true
+                       ELSE $reviewed END
                 ),
-                // conflict is sticky once true: any rule reporting a
-                // conflict on the pair flags it, even if a different
-                // rule later fires without conflict.
                 r.conflict = (coalesce(r.conflict, false) OR $conflict)
-            // Recompute summary from the full list so a stale prior
-            // entry from the same rule is correctly replaced.
-            WITH r, new_detections,
-              reduce(top = new_detections[0], d IN new_detections |
-                CASE WHEN d.confidence > top.confidence THEN d ELSE top END
-              ) AS top
-            SET r.confidence = top.confidence,
-                r.method = top.rule_name,
-                r.detected_at = top.detected_at
+            // Recompute summary fields from the full (post-update)
+            // confidence list. The reduce() walks parallel arrays to
+            // find the max-confidence index.
+            WITH r,
+              reduce(best = {{idx: 0, c: -1.0}},
+                     i IN range(0, size(r.detection_confidences) - 1) |
+                CASE WHEN r.detection_confidences[i] > best.c
+                     THEN {{idx: i, c: r.detection_confidences[i]}}
+                     ELSE best END
+              ).idx AS top_i
+            SET r.confidence  = r.detection_confidences[top_i],
+                r.method      = r.detection_rules[top_i],
+                r.detected_at = r.detection_dates[top_i]
             """,
             source_id=decision.source_id,
             target_id=decision.target_id,
