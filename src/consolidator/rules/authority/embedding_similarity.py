@@ -20,6 +20,7 @@ Safety invariants:
 from __future__ import annotations
 
 from loguru import logger
+from rapidfuzz.distance import JaroWinkler
 
 from src.config import settings
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
@@ -72,16 +73,17 @@ class EmbeddingCosineSameAuthority(Rule):
         jw_min = settings.embedding_cosine_jaro_winkler_min
         cross_country_only = settings.embedding_cosine_cross_country_only
 
-        # The filter stack, in cheap-before-expensive order:
-        #   1. self_id ≠ candidate (trivial)
-        #   2. encoder_id match (indexed string equality)
+        # The filter stack:
+        #   1. self_id ≠ candidate (trivial, in DB)
+        #   2. encoder_id match (string equality, in DB)
         #   3. cosine ≥ threshold (already applied by the vector index)
-        #   4. cross-country gate (string equality, optional)
-        #   5. minimum Jaro-Winkler on raw names — forces at least weak
-        #      token overlap. Blocks "music academy ↔ music academy"
-        #      role-matches with zero name resemblance.
-        #   6. OPTIONAL MATCH to drop human-reviewed pairs.
-        # jaroWinkler lives in APOC (already required by other rules).
+        #   4. cross-country gate (in DB, when enabled)
+        #   5. drop pairs already reviewed by a human (OPTIONAL MATCH)
+        #   6. minimum Jaro-Winkler on raw names — applied in Python via
+        #      rapidfuzz, same library as FuzzyNameSameCountryAuthority.
+        #      APOC doesn't ship a jaroWinkler function (only Levenshtein
+        #      distance), and reusing rapidfuzz keeps the metric
+        #      consistent with the existing fuzzy rule.
         query = """
         CALL db.index.vector.queryNodes(
             'authority_name_embedding_idx', $k, $vec
@@ -91,10 +93,6 @@ class EmbeddingCosineSameAuthority(Rule):
           AND score >= $threshold
           AND ($cross_country_only = false
                OR coalesce(node.country, '') <> coalesce($self_country, ''))
-          AND apoc.text.jaroWinkler(
-                toLower(coalesce(node.name, '')),
-                toLower($self_name)
-              ) >= $jw_min
         OPTIONAL MATCH (s:Authority {authority_id: $self_id})-[r:SAME_AS]->(node)
         WITH node, score, r
         WHERE r IS NULL OR coalesce(r.reviewed, false) = false
@@ -107,10 +105,24 @@ class EmbeddingCosineSameAuthority(Rule):
             result = await session.run(
                 query, k=top_k + 1, vec=vec,
                 self_id=entity.id, enc=enc, threshold=threshold,
-                self_name=self_name, self_country=self_country,
-                jw_min=jw_min, cross_country_only=cross_country_only,
+                self_country=self_country,
+                cross_country_only=cross_country_only,
             )
             records = [record async for record in result]
+
+        # Post-filter on Jaro-Winkler against the source name. Done in
+        # Python because (a) APOC has no jaroWinkler function and (b)
+        # rapidfuzz is already in the consolidator's deps + used by the
+        # fuzzy rule. The set we filter is at most top_k+1 rows so the
+        # cost is negligible.
+        self_name_lc = self_name.lower()
+        if jw_min > 0.0:
+            kept = []
+            for rec in records:
+                name = (dict(rec["n"]).get("name") or "").lower()
+                if JaroWinkler.normalized_similarity(self_name_lc, name) >= jw_min:
+                    kept.append(rec)
+            records = kept
 
         if records:
             logger.debug(
