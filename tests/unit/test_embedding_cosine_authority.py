@@ -143,19 +143,69 @@ async def test_find_candidates_maps_vector_index_results(monkeypatch):
     assert cands[0].context["cosine_score"] == 0.94
     assert cands[1].context["cosine_score"] == 0.91
 
-    # Vector-index query was built with the right knobs
+    # Vector-index query was built with the right knobs.
+    # Jaro-Winkler post-filter is applied in Python (rapidfuzz), not in
+    # Cypher — APOC ships no jaroWinkler function.
     args, kwargs = session.run.call_args
     assert "db.index.vector.queryNodes" in args[0]
-    assert "apoc.text.jaroWinkler" in args[0]
+    assert "apoc.text.jaroWinkler" not in args[0]
     assert "cross_country_only" in args[0]
     assert kwargs["k"] == 4  # top_k (3) + 1 for self-exclusion headroom
     assert kwargs["vec"] == VEC
     assert kwargs["threshold"] == 0.90
     assert kwargs["enc"] == ENC
-    assert kwargs["jw_min"] == 0.30
     assert kwargs["cross_country_only"] is True
-    assert kwargs["self_name"] == "Ministry of Defence"
     assert kwargs["self_country"] == "IRL"
+    # self_name + jw_min are not query params anymore — JW happens in Python
+    assert "jw_min" not in kwargs
+    assert "self_name" not in kwargs
+
+
+async def test_find_candidates_jw_post_filter_drops_low_overlap(monkeypatch):
+    """JW post-filter rejects pairs whose raw names share little
+    surface form. Useful as an extra knob (default permissive); set
+    via env when LaBSE role-matches start dominating."""
+    monkeypatch.setattr(_settings, "embedding_cosine_top_k", 3)
+    monkeypatch.setattr(_settings, "embedding_cosine_threshold", 0.90)
+    # In-test threshold is deliberately tighter than the package
+    # default (0.30) so the assertion is meaningful on the test pairs.
+    monkeypatch.setattr(_settings, "embedding_cosine_jaro_winkler_min", 0.70)
+    monkeypatch.setattr(_settings, "embedding_cosine_cross_country_only", True)
+
+    # JW("ministry of defence", "ministero della difesa")  ≈ 0.85  → keep
+    # JW("ministry of defence", "rete ferroviaria s.p.a.")  ≈ 0.42 → drop
+    # JW("ministry of defence", "department of defence")    ≈ 0.68 → drop
+    keep_lookalike = {
+        "authority_id": "AUTH-42", "name": "Ministero della Difesa",
+        "country": "ITA", "name_embedding_encoder": ENC,
+    }
+    drop_role_only = {
+        "authority_id": "AUTH-99", "name": "Rete Ferroviaria S.p.A.",
+        "country": "ITA", "name_embedding_encoder": ENC,
+    }
+    drop_partial = {
+        "authority_id": "AUTH-7", "name": "Department of Defence",
+        "country": "GBR", "name_embedding_encoder": ENC,
+    }
+    records = [
+        {"n": keep_lookalike, "s": 0.93},
+        {"n": drop_role_only, "s": 0.92},
+        {"n": drop_partial, "s": 0.91},
+    ]
+    driver, _ = _mock_driver_with_records(records)
+
+    async def _fake_get_driver():
+        return driver
+    monkeypatch.setattr(
+        "src.consolidator.neo4j.client.get_driver", _fake_get_driver,
+    )
+
+    rule = EmbeddingCosineSameAuthority()
+    cands = await rule.find_candidates(_authority())
+    kept_ids = {c.entity.id for c in cands}
+    assert kept_ids == {"AUTH-42"}, (
+        f"only the cross-lingual lookalike should survive at JW>=0.70, got {kept_ids}"
+    )
 
 
 async def test_find_candidates_empty_when_index_returns_nothing(monkeypatch):
