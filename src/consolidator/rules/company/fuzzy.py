@@ -89,6 +89,13 @@ class FuzzyNameSameCountry(Rule):
     entity_types = {"Company"}
     confidence = 0.95  # upper bound; emitted confidence is the actual Jaro-Winkler score
     action = "flag"
+    # Canary on 1k Companies showed the band ≥0.97 to be exclusively
+    # legal-form-stripped variants ("BAYARD" ↔ "Bayard SAS",
+    # "SARL PROJARDIN" ↔ "PROJARDIN") — same entity, different
+    # registration form. Below 0.97 the queue starts mixing in
+    # parent/subsidiary cases ("Mercedes-Benz Leasing" ↔ "Mercedes-Benz
+    # AG") which are NOT mergeable. Auto-merge top tier; flag the rest.
+    auto_merge_threshold = 0.97
 
     async def applies(self, entity: Entity) -> bool:
         return bool(entity.properties.get("name")) and bool(entity.properties.get("country"))

@@ -46,6 +46,13 @@ class EmbeddingCosineSameAuthority(Rule):
     # confidence is the actual cosine score, stored on the :SAME_AS edge.
     confidence = 0.87
     action = "flag"
+    # Calibrated on the 500-authority canary at JW=0.45: at cosine ≥
+    # 0.98 the matches are exclusively EU-body cross-country variants
+    # (DG COMM / FPI / INTPA per delegation) — zero false positives
+    # observed. Below 0.98, results trail off into role-only twins
+    # (national libraries, central banks, music academies). Auto-merge
+    # at the top tier; flag the rest for human review.
+    auto_merge_threshold = 0.98
 
     async def applies(self, entity: Entity) -> bool:
         if not settings.embedding_cosine_enabled:
