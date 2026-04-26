@@ -266,6 +266,89 @@ async def test_engine_still_short_circuits_after_auto_merge():
     assert exec_mock.await_count == 1
 
 
+class _EnrichRule(_FakeRule):
+    """Enrich-action rule used to verify the match_only / enrich_only mode
+    filter. Targets the source entity itself (legitimate for enrichment)."""
+
+    name = "fake_enrich"
+    action = "enrich"
+
+    async def find_candidates(self, entity):
+        return [Candidate(entity=entity, context={})]
+
+    async def resolve(self, entity, candidate):
+        return Decision(
+            rule_name=self.name,
+            action="enrich",
+            source_id=entity.id,
+            target_id=candidate.entity.id,
+            confidence=1.0,
+            entity_type="Company",
+            details={},
+        )
+
+
+def _patch_engine_deps(rules, run_id, capture_fn):
+    """Common scaffolding for the three mode tests below."""
+    return [
+        patch("src.consolidator.engine.list_rules", return_value=rules),
+        patch(
+            "src.consolidator.engine.entities.load",
+            AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
+        ),
+        patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value=run_id)),
+        patch("src.consolidator.engine.audit.end_run", AsyncMock()),
+        patch("src.consolidator.engine.audit.record_decision", AsyncMock()),
+        patch("src.consolidator.engine.actions.execute", capture_fn),
+    ]
+
+
+async def _run_with_mode(rules, run_id, mode):
+    fired: list[str] = []
+
+    async def _capture(_d, _db, *, decision, entity, candidate):
+        del entity, candidate
+        fired.append(decision.rule_name)
+        return decision.action
+
+    patches = _patch_engine_deps(rules, run_id, _capture)
+    for p in patches:
+        p.start()
+    try:
+        kwargs = {"entity_type": "Company", "entity_id": "gmr-A"}
+        if mode is not None:
+            kwargs["mode"] = mode
+        await engine.consolidate(AsyncMock(), "neo4j", **kwargs)
+    finally:
+        for p in patches:
+            p.stop()
+    return fired
+
+
+@pytest.mark.asyncio
+async def test_engine_match_only_skips_enrich_rules():
+    """mode='match_only' runs dedup/match rules but skips enrich rules.
+    Used by the dedup sweep so it isn't blocked on linguistics RTTs."""
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-mo", "match_only")
+    assert fired == ["fake"]
+
+
+@pytest.mark.asyncio
+async def test_engine_enrich_only_skips_match_rules():
+    """mode='enrich_only' runs translation/enrichment rules only.
+    Used by the translation-backfill sweep."""
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-eo", "enrich_only")
+    assert fired == ["fake_enrich"]
+
+
+@pytest.mark.asyncio
+async def test_engine_default_mode_runs_everything():
+    """mode='all' is the default and preserves the existing behaviour of
+    running every applicable rule."""
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-all", None)
+    assert sorted(fired) == ["fake", "fake_enrich"]
+
+
 @pytest.mark.asyncio
 async def test_engine_handles_missing_entity():
     with patch("src.consolidator.engine.entities.load", AsyncMock(return_value=None)), patch(

@@ -1,6 +1,7 @@
 """The consolidation engine: runs the rule pipeline for an entity and persists every outcome."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from loguru import logger
 from neo4j import AsyncDriver
@@ -10,6 +11,12 @@ from src.config import settings
 from src.consolidator import actions, audit, entities
 from src.consolidator.rules.base import Decision
 from src.consolidator.rules.registry import list_rules
+
+# `match_only` skips rules with action="enrich" — useful for the dedup
+# sweep where translation enrichment dominates wall-time but is
+# orthogonal to matching. `enrich_only` is the inverse, for the
+# translation-backfill sweep.
+ConsolidateMode = Literal["all", "match_only", "enrich_only"]
 
 RULE_FIRES = Counter(
     "gmr_consolidator_rule_fires_total",
@@ -36,6 +43,7 @@ async def consolidate(
     triggered_by: str = "api",
     exclude_rule_prefix: str | None = None,
     translation_backend: str | None = None,
+    mode: ConsolidateMode = "all",
 ) -> ConsolidationResult:
     """Run the rule pipeline for an entity. Always records a :ConsolidationRun with outcomes.
 
@@ -46,6 +54,14 @@ async def consolidate(
     translation backend (e.g. "mistral", "nllb-local"). Threaded into each
     enrichment rule's candidate context; `None` falls back to the service
     default configured on the consolidator pod.
+
+    mode: filters which rules run by their action.
+      "all" (default) — every applicable rule runs.
+      "match_only"    — skip rules with action="enrich" (e.g. translation
+                        enrichment), keep matching/dedup rules. Used by the
+                        dedup sweep so it isn't blocked on linguistics RTTs.
+      "enrich_only"   — only run rules with action="enrich". Used by the
+                        translation-backfill sweep.
     """
 
     entity = await entities.load(driver, database, entity_type=entity_type, entity_id=entity_id)
@@ -78,6 +94,10 @@ async def consolidate(
 
     for rule in list_rules():
         if exclude_rule_prefix and rule.name.startswith(exclude_rule_prefix):
+            continue
+        if mode == "match_only" and rule.action == "enrich":
+            continue
+        if mode == "enrich_only" and rule.action != "enrich":
             continue
         if entity_type not in rule.entity_types:
             continue
