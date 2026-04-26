@@ -135,6 +135,13 @@ class ExactNameAnyCountryAuthority(Rule):
     entity_types = {"Authority"}
     confidence = 0.90
     action = "flag"
+    # Canary on 1k authorities surfaced 32 of these — every one was a
+    # European Commission DG (DG COMM, FPI, INTPA) registered per
+    # delegation country. Zero false positives. Promote to auto-merge
+    # at the rule's flat 0.90 confidence; the conflict gate (handled in
+    # the engine upgrade logic) still drops anything with a hard ID
+    # mismatch back to flag-for-review.
+    auto_merge_threshold = 0.90
 
     async def applies(self, entity: Entity) -> bool:
         return bool(entity.properties.get("name"))

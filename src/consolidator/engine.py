@@ -110,6 +110,29 @@ async def consolidate(
 
             decision: Decision = await rule.resolve(entity, candidate)
 
+            # Threshold-based promotion: a high-confidence flag with no
+            # detected conflict is treated as an auto-merge when the
+            # rule has set an auto_merge_threshold. Calibrated per-rule
+            # from the canary sweeps; conflict-flagged pairs (mismatched
+            # LEI/VAT/etc.) always remain in the human queue regardless
+            # of confidence. The actions._merge gate on
+            # settings.auto_merge_enabled still applies.
+            if (
+                decision.action == "flag"
+                and rule.auto_merge_threshold is not None
+                and decision.confidence >= rule.auto_merge_threshold
+                and not decision.details.get("conflict", False)
+            ):
+                decision = Decision(
+                    rule_name=decision.rule_name,
+                    action="merge",
+                    source_id=decision.source_id,
+                    target_id=decision.target_id,
+                    confidence=decision.confidence,
+                    entity_type=decision.entity_type,
+                    details={**decision.details, "auto_merged_above_threshold": rule.auto_merge_threshold},
+                )
+
             outcome = await actions.execute(
                 driver, database, decision=decision, entity=entity, candidate=candidate
             )

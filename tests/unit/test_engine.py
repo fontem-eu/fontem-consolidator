@@ -34,6 +34,126 @@ class _FakeRule(Rule):
         )
 
 
+class _FakeRuleWithThreshold(_FakeRule):
+    """Rule that sets auto_merge_threshold so the engine can promote
+    a high-confidence flag → merge. Per-test confidence and conflict
+    flag are passed via constructor args."""
+    name = "fake_with_threshold"
+    auto_merge_threshold = 0.95
+
+    def __init__(self, conf: float = 0.9, conflict: bool = False) -> None:
+        self.conf = conf
+        self.conflict = conflict
+
+    async def resolve(self, entity, candidate):
+        return Decision(
+            rule_name=self.name,
+            action="flag",
+            source_id=entity.id,
+            target_id=candidate.entity.id,
+            confidence=self.conf,
+            entity_type="Company",
+            details={"conflict": self.conflict},
+        )
+
+    async def find_candidates(self, entity):
+        return [
+            Candidate(
+                entity=Entity("Company", "gmr-B", {"name": "B"}),
+                context={},
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_engine_promotes_flag_to_merge_above_threshold():
+    """Confidence above the rule's auto_merge_threshold AND no
+    conflict → engine rewrites the Decision from flag to merge before
+    dispatching to actions.execute."""
+    rule = _FakeRuleWithThreshold(conf=0.97, conflict=False)
+    captured_action = []
+
+    async def _capture(_driver, _database, *, decision, entity, candidate):
+        del entity, candidate  # unused
+        captured_action.append(decision.action)
+        return "auto_merge"
+
+    with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
+        "src.consolidator.engine.entities.load",
+        AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
+    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-x")), patch(
+        "src.consolidator.engine.audit.end_run", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.audit.record_decision", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.actions.execute", _capture
+    ):
+        result = await engine.consolidate(
+            AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
+        )
+
+    # Engine rewrote action from "flag" to "merge"
+    assert captured_action == ["merge"]
+    assert result.decisions[0]["action"] == "merge"
+
+
+@pytest.mark.asyncio
+async def test_engine_does_not_promote_below_threshold():
+    rule = _FakeRuleWithThreshold(conf=0.94, conflict=False)  # below 0.95
+    captured_action = []
+
+    async def _capture(_driver, _database, *, decision, entity, candidate):
+        del entity, candidate
+        captured_action.append(decision.action)
+        return "flag"
+
+    with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
+        "src.consolidator.engine.entities.load",
+        AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
+    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-y")), patch(
+        "src.consolidator.engine.audit.end_run", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.audit.record_decision", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.actions.execute", _capture
+    ):
+        await engine.consolidate(
+            AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
+        )
+
+    # Stays as flag — confidence didn't clear the threshold
+    assert captured_action == ["flag"]
+
+
+@pytest.mark.asyncio
+async def test_engine_does_not_promote_when_conflict_set():
+    """Even at maximum confidence, a hard ID conflict (mismatched
+    LEI / VAT / etc.) keeps the pair in the human-review queue."""
+    rule = _FakeRuleWithThreshold(conf=1.0, conflict=True)  # conflict overrides
+    captured_action = []
+
+    async def _capture(_driver, _database, *, decision, entity, candidate):
+        del entity, candidate
+        captured_action.append(decision.action)
+        return "flag"
+
+    with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
+        "src.consolidator.engine.entities.load",
+        AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
+    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-z")), patch(
+        "src.consolidator.engine.audit.end_run", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.audit.record_decision", AsyncMock()
+    ), patch(
+        "src.consolidator.engine.actions.execute", _capture
+    ):
+        await engine.consolidate(
+            AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
+        )
+
+    assert captured_action == ["flag"]
+
+
 @pytest.mark.asyncio
 async def test_engine_records_run_and_decision():
     fake = _FakeRule()
