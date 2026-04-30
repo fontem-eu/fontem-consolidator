@@ -31,6 +31,89 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# CLIENT_OF / SUPPLIER_OF are summary edges materialized by the
+# edgar-gmr-etl `materialize_trade_edges` job. They aggregate the
+# Authority -[:AWARDED]-> Contract -[:AWARDED_TO]-> Company chain
+# down to a single weighted edge per (authority, company) pair.
+#
+# When apoc.refactor.mergeNodes rewrites edges from a duplicate to
+# a canonical node, the AWARDED / AWARDED_TO edges follow correctly,
+# but the materialized CLIENT_OF / SUPPLIER_OF edges may end up
+# duplicated, deduplicated with stale `contracts`/`total_eur`
+# property values, or — worst case — kept on a node whose AWARDED
+# neighborhood is now empty. The user-visible symptom: the graph
+# view (which renders CLIENT_OF / SUPPLIER_OF when summary=true)
+# shows a contract count that the contracts list (which queries
+# AWARDED directly) cannot reproduce.
+#
+# To keep the two views consistent, after every merge we drop and
+# rebuild the canonical node's trade-summary edges from its current
+# AWARDED neighborhood. The rebuild is bounded — it only touches
+# the canonical's neighborhood, not the whole graph.
+_REFRESH_AUTHORITY_TRADE_EDGES = """
+MATCH (canonical:Authority {authority_id: $canonical_id})
+OPTIONAL MATCH (canonical)-[r1:CLIENT_OF]->()
+DELETE r1
+WITH canonical
+OPTIONAL MATCH ()-[r2:SUPPLIER_OF]->(canonical)
+DELETE r2
+WITH canonical
+MATCH (canonical)-[:AWARDED]->(ct:Contract)-[:AWARDED_TO]->(c:Company)
+WITH canonical, c,
+     count(ct) AS contracts,
+     sum(coalesce(ct.value_eur, 0)) AS total_eur,
+     min(ct.publication_date) AS earliest,
+     max(ct.publication_date) AS latest
+CREATE (canonical)-[:CLIENT_OF {
+  contracts: contracts, total_eur: total_eur,
+  earliest: earliest, latest: latest
+}]->(c)
+CREATE (c)-[:SUPPLIER_OF {
+  contracts: contracts, total_eur: total_eur,
+  earliest: earliest, latest: latest
+}]->(canonical)
+"""
+
+_REFRESH_COMPANY_TRADE_EDGES = """
+MATCH (canonical:Company {gmr_id: $canonical_id})
+OPTIONAL MATCH ()-[r1:CLIENT_OF]->(canonical)
+DELETE r1
+WITH canonical
+OPTIONAL MATCH (canonical)-[r2:SUPPLIER_OF]->()
+DELETE r2
+WITH canonical
+MATCH (a:Authority)-[:AWARDED]->(ct:Contract)-[:AWARDED_TO]->(canonical)
+WITH a, canonical,
+     count(ct) AS contracts,
+     sum(coalesce(ct.value_eur, 0)) AS total_eur,
+     min(ct.publication_date) AS earliest,
+     max(ct.publication_date) AS latest
+CREATE (a)-[:CLIENT_OF {
+  contracts: contracts, total_eur: total_eur,
+  earliest: earliest, latest: latest
+}]->(canonical)
+CREATE (canonical)-[:SUPPLIER_OF {
+  contracts: contracts, total_eur: total_eur,
+  earliest: earliest, latest: latest
+}]->(a)
+"""
+
+
+async def _refresh_trade_edges(session, label: str, canonical_id: str) -> None:
+    """Rebuild CLIENT_OF / SUPPLIER_OF for the canonical node.
+
+    Idempotent — drops then rebuilds from the live AWARDED graph.
+    Skips entity types that don't participate in the trade summary
+    (only Authority / Company contribute).
+    """
+    if label == "Authority":
+        await session.run(_REFRESH_AUTHORITY_TRADE_EDGES, canonical_id=canonical_id)
+    elif label == "Company":
+        await session.run(_REFRESH_COMPANY_TRADE_EDGES, canonical_id=canonical_id)
+    # Contracts merging is conceptually possible but doesn't change
+    # the (Authority, Company) pair the summary edges aggregate over.
+
+
 async def execute(
     driver: AsyncDriver,
     database: str,
@@ -136,6 +219,13 @@ async def _merge(
             entity_type=label,
             retired_lei=retired_lei,
         )
+
+        # Rebuild the canonical's trade-summary edges from its now-merged
+        # AWARDED neighborhood so the graph view's CLIENT_OF count and
+        # the contracts list's AWARDED count agree. Without this, the
+        # graph view shows N contracts (carried by stale CLIENT_OF
+        # weights) while the contracts list shows the post-merge truth.
+        await _refresh_trade_edges(session, label, decision.source_id)
 
 
 async def _link(
