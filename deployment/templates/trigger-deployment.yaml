@@ -1,0 +1,95 @@
+{{- /*
+consolidator-trigger — gmr-events EventConsumer that POSTs each
+input event to the consolidator's /events/dispatch endpoint after
+the Neo4j sink has projected it.
+
+Same image as the API pod, different entrypoint. Cycle prevention
+is in the consumer (INPUT_TYPES filter): the consolidator's own
+outputs (AssertSameAs / RetractSameAs) are skipped, so the trigger
+never re-dispatches its own writes.
+
+Single replica — ordering matters and the offset table is per
+consumer-name.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: consolidator-trigger
+  labels:
+    app: consolidator-trigger
+    component: event-consumer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: consolidator-trigger
+  template:
+    metadata:
+      labels:
+        app: consolidator-trigger
+        component: event-consumer
+      annotations:
+        # Sinks/triggers run under linkerd-disabled like virtuoso/neo4j
+        # (data-tier exemption — long-running connections to Postgres).
+        linkerd.io/inject: disabled
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: trigger
+          image: contribute.void42.internal/golden/gmr-consolidator:{{ .Values.version }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "src.consolidator.trigger"]
+          ports:
+            - containerPort: 9100
+              name: metrics
+          env:
+            - name: EVENT_CONSUMER_NAME
+              value: consolidator_trigger
+            # Gate on the Neo4j sink — the consolidator queries
+            # Neo4j (resolver, fulltext, vector, GDS) so the new
+            # entity must be present before we dispatch it.
+            - name: EVENT_UPSTREAM_CONSUMER
+              value: neo4j_sink
+            - name: EVENTS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gmr-postgres-credentials
+                  key: EVENTS_DATABASE_URL
+            - name: CONSOLIDATOR_URL
+              value: http://gmr-consolidator.gmr.svc.cluster.local:8000
+            - name: KUMA_PUSH_URL
+              valueFrom:
+                secretKeyRef:
+                  name: etl-kuma-push-urls
+                  key: consolidator-trigger
+                  optional: true
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /metrics, port: 9100 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /metrics, port: 9100 }
+            periodSeconds: 30
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: consolidator-trigger
+  labels:
+    app: consolidator-trigger
+spec:
+  selector:
+    app: consolidator-trigger
+  ports:
+    - { name: metrics, port: 9100, targetPort: 9100 }

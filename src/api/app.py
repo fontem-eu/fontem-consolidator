@@ -8,6 +8,7 @@ from starlette.responses import Response
 from src.api.routes.candidates import router as candidates_router
 from src.api.routes.consolidate import router as consolidate_router
 from src.api.routes.decisions import router as decisions_router
+from src.api.routes.dispatch import router as dispatch_router
 from src.api.routes.relationships import router as relationships_router
 from src.api.routes.resolve import router as resolve_router
 from src.api.routes.webhooks import router as webhooks_router
@@ -31,6 +32,7 @@ app = FastAPI(title="gmr-consolidator", version="0.1.0", lifespan=lifespan)
 app.include_router(consolidate_router)
 app.include_router(candidates_router)
 app.include_router(decisions_router)
+app.include_router(dispatch_router)
 app.include_router(relationships_router)
 app.include_router(resolve_router)
 app.include_router(webhooks_router)

@@ -13,7 +13,20 @@ jobs:
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
           PIP_TRUSTED_HOST: nexus.void42.internal
-        run: pip install --no-cache-dir -r requirements-dev.txt
+          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+        run: |
+          pip install --no-cache-dir -r requirements-dev.txt
+          # Internal-only deps: gmr-event-schemas + gmr-events live
+          # in golden/* on Gitea. Clone with the read token; the
+          # event-log trigger / dispatch route depend on these.
+          tmpdir=$(mktemp -d)
+          git clone --depth 1 \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/gmr-event-schemas.git" \
+              "$tmpdir/gmr-event-schemas"
+          git clone --depth 1 \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/gmr-events.git" \
+              "$tmpdir/gmr-events"
+          pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
       - name: Unit tests
         run: python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
       - name: Lint
@@ -27,6 +40,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Setup Docker
         run: curl -fsSL https://nexus.void42.internal/repository/docker-releases/linux/static/stable/x86_64/docker-27.5.1.tgz | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+      - name: Vendor internal Python deps for docker build
+        # The Dockerfile pip-installs vendor/gmr-event-schemas + vendor/gmr-events.
+        # pip's isolated-build env can't reach Gitea; we clone here at CI time
+        # with GMR_CI_READ_TOKEN, then docker build copies them in.
+        env:
+          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+        run: |
+          mkdir -p vendor
+          for repo in gmr-event-schemas gmr-events; do
+              rm -rf "vendor/$repo"
+              git clone --depth 1 \
+                  "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/${repo}.git" \
+                  "vendor/$repo"
+              rm -rf "vendor/$repo/.git"
+          done
       - name: Build and push image
         run: |
           TAG="v$(git rev-parse --short HEAD)"
