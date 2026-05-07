@@ -15,6 +15,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# gmr-events + gmr-event-schemas vendored at build time. CI's
+# build-deploy step clones them into vendor/ before `docker build`.
+COPY vendor/gmr-event-schemas/ /tmp/gmr-event-schemas/
+COPY vendor/gmr-events/        /tmp/gmr-events/
+RUN pip install --no-cache-dir /tmp/gmr-event-schemas /tmp/gmr-events \
+ && rm -rf /tmp/gmr-events /tmp/gmr-event-schemas
+
 COPY src/ ./src/
 
 USER appuser

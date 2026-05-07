@@ -7,6 +7,13 @@ subsequent rules for that pair are skipped.
 When settings.auto_merge_enabled is False, any "merge" decision is downgraded
 to a "flag" (writes :SAME_AS {reviewed:false} instead of collapsing the nodes).
 This is the safety valve for the initial rollout.
+
+Event-log emission: every match (flag, conflict, merge) ALSO emits an
+``AssertSameAs`` event into ``events.entity_events`` so the Virtuoso
+sink can project ``owl:sameAs``. The Neo4j-direct write here remains
+the source of truth for the rich detection-arrays metadata used by
+the review queue; a follow-up will move that projection into the
+Neo4j sink and let this module emit-only. See CONSOLIDATOR-TRIGGER.md.
 """
 
 from datetime import datetime, timezone
@@ -14,6 +21,7 @@ from datetime import datetime, timezone
 from neo4j import AsyncDriver
 
 from src.config import settings
+from src.consolidator import eventlog
 from src.consolidator.rules.base import Candidate, Decision, Entity
 
 _ID_KEY_BY_LABEL: dict[str, str] = {
@@ -22,9 +30,22 @@ _ID_KEY_BY_LABEL: dict[str, str] = {
     "Contract": "ted_notice_id",
 }
 
+# IRI scheme matches the producers (gmr-virtuoso-sink, gmr-neo4j-sink).
+# Used to build the AssertSameAs event payload below.
+_IRI_LABEL_BY_TYPE: dict[str, str] = {
+    "Company":   "Company",
+    "Authority": "Authority",
+    "Contract":  "Contract",
+}
+
 
 def _id_key(label: str) -> str:
     return _ID_KEY_BY_LABEL.get(label, "authority_id")
+
+
+def _entity_iri(entity_type: str, entity_id: str) -> str:
+    label = _IRI_LABEL_BY_TYPE.get(entity_type, entity_type)
+    return f"http://data.fontem.eu/id/{label}/{entity_id}"
 
 
 def _now() -> str:
@@ -130,8 +151,10 @@ async def execute(
     if decision.action == "merge":
         if not settings.auto_merge_enabled:
             await _flag_same_as(driver, database, decision=decision, reviewed=False)
+            await _emit_same_as_event(decision)
             return "flag"
         await _merge(driver, database, decision=decision, entity=entity, candidate=candidate)
+        await _emit_same_as_event(decision)
         return "auto_merge"
 
     if decision.action == "link":
@@ -144,6 +167,7 @@ async def execute(
         await _flag_same_as(
             driver, database, decision=decision, reviewed=False, conflict=conflict
         )
+        await _emit_same_as_event(decision)
         return "conflict" if conflict else "flag"
 
     if decision.action == "enrich":
@@ -151,6 +175,23 @@ async def execute(
         return "enrich"
 
     return "noop"
+
+
+async def _emit_same_as_event(decision: Decision) -> None:
+    """Emit an AssertSameAs event so Virtuoso (and replay-from-zero
+    of Neo4j) see the equivalence. Failures are absorbed in the
+    eventlog shim — the consolidator's Neo4j write above is the
+    immediate source of truth."""
+    a_iri = _entity_iri(decision.entity_type, decision.source_id)
+    b_iri = _entity_iri(decision.entity_type, decision.target_id)
+    await eventlog.emit_assert_same_as(
+        a_iri=a_iri,
+        b_iri=b_iri,
+        confidence=float(decision.confidence),
+        method=decision.rule_name,
+        rule=decision.rule_name,
+        domain=decision.entity_type.lower(),
+    )
 
 
 async def _merge(
