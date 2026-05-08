@@ -6,19 +6,28 @@ are dispatched. The consolidator's own outputs (AssertSameAs,
 RetractSameAs) and bracket markers (Begin/EndGraphReplace) advance
 the offset without dispatch — the loop is broken by construction.
 
+Concurrency: each batch is dispatched through a bounded thread
+pool (``CONSOLIDATOR_TRIGGER_CONCURRENCY``, default 10). Order
+doesn't matter inside a batch — each consolidate() runs against
+its own entity in Neo4j and emits MERGE-based events, which are
+idempotent. The whole batch's offset only commits once every
+event in it has succeeded; if any one fails the batch retries
+(individual successful events are no-ops on retry).
+
 Failure handling:
-  * 2xx, 409                → success, advance offset.
+  * 2xx, 409                → success.
   * 5xx, network error      → raise; EventConsumer retries the batch.
   * 4xx (other than 409)    → raise; eventually DLQ'd via batch retry.
 
 Per-event DLQ would require extending the EventConsumer base class
-to commit per-event rather than per-batch. For Phase D we accept
-batch-level DLQ — payload-shape errors are rare and surface fast.
+to commit per-event rather than per-batch. We accept batch-level
+DLQ — payload-shape errors are rare and surface fast.
 """
 from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from gmr_event_schemas import EventEnvelope
@@ -45,7 +54,7 @@ INPUT_TYPES: frozenset[str] = frozenset({
 
 class ConsolidatorTrigger(EventConsumer):
     """Walks ``events.entity_events`` and triggers consolidation
-    one entity at a time."""
+    via a bounded HTTP fan-out per batch."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -53,22 +62,46 @@ class ConsolidatorTrigger(EventConsumer):
         self.timeout = float(
             os.environ.get("CONSOLIDATOR_HTTP_TIMEOUT", "60")
         )
+        self.concurrency = max(1, int(
+            os.environ.get("CONSOLIDATOR_TRIGGER_CONCURRENCY", "10")
+        ))
 
     def handle(self, batch: list[EventEnvelope]) -> None:
-        skipped = 0
-        dispatched = 0
-        with httpx.Client(timeout=self.timeout) as client:
-            for ev in batch:
-                if ev.event_type not in INPUT_TYPES:
-                    skipped += 1
-                    continue
-                self._dispatch(client, ev)
-                dispatched += 1
-        if skipped:
-            logger.debug(
-                "batch: dispatched=%d skipped=%d (non-INPUT_TYPES)",
-                dispatched, skipped,
-            )
+        # Filter early — we don't want to spend executor slots on
+        # events the trigger will skip.
+        to_dispatch = [ev for ev in batch if ev.event_type in INPUT_TYPES]
+        skipped = len(batch) - len(to_dispatch)
+        if not to_dispatch:
+            if skipped:
+                logger.debug(
+                    "batch: skipped=%d (all non-INPUT_TYPES)", skipped,
+                )
+            return
+
+        # One httpx.Client per worker so connection pools don't
+        # serialise between threads. The Client itself is thread-safe
+        # for concurrent requests, but a single shared pool of size
+        # ~10 against the same target is fine — keep it simple.
+        # Limits set just under the worker count to leave headroom.
+        limits = httpx.Limits(
+            max_connections=self.concurrency,
+            max_keepalive_connections=self.concurrency,
+        )
+        with httpx.Client(timeout=self.timeout, limits=limits) as client:
+            with ThreadPoolExecutor(
+                max_workers=self.concurrency,
+                thread_name_prefix="trigger",
+            ) as pool:
+                # list() forces all futures to surface their results
+                # (and raise on first failure).
+                results = list(pool.map(
+                    lambda ev: self._dispatch(client, ev),
+                    to_dispatch,
+                ))
+        logger.debug(
+            "batch: dispatched=%d skipped=%d (concurrency=%d)",
+            len(results), skipped, self.concurrency,
+        )
 
     def _dispatch(
         self, client: httpx.Client, ev: EventEnvelope,
