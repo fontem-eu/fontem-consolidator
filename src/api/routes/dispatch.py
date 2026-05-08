@@ -78,12 +78,19 @@ async def dispatch(req: DispatchRequest):
         )
 
     driver = await get_driver()
+    # Skip the gds_* rules on per-event dispatch. Each gds rule
+    # projects a fresh subgraph (millions of nodes for Company)
+    # and runs Jaccard / WCC across it — that's seconds per call
+    # and dominates the dispatch latency. The hourly cron sweep
+    # already runs the GDS rules globally; running them again
+    # per-event adds little signal beyond what the cron catches.
     result = await engine.consolidate(
         driver,
         settings.neo4j_database,
         entity_type=entity_type,
         entity_id=str(entity_id),
         triggered_by=f"event:{req.seq}",
+        exclude_rule_prefix="gds_",
     )
     logger.info(
         "dispatch seq={seq} type={t} → {entity_type}/{entity_id} "
