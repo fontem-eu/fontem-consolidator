@@ -67,11 +67,17 @@ spec:
             # Bounded fan-out: each batch is dispatched through a
             # thread pool. Size is per-batch, so the upper bound on
             # in-flight POSTs to gmr-consolidator at any moment is
-            # this value. Default 10 — pick higher only if the
-            # consolidator pod can keep up; resolver + Neo4j are
-            # the bottleneck, not the trigger.
+            # this value. Resolver + Neo4j are the bottleneck;
+            # pick higher only when Neo4j has the cache + tx-timeout
+            # budget for it (current values: 2g pagecache, 90s tx
+            # timeout, 512m per-tx memory cap).
             - name: CONSOLIDATOR_TRIGGER_CONCURRENCY
-              value: "{{ .Values.triggerConcurrency | default 10 }}"
+              value: "{{ .Values.triggerConcurrency | default 3 }}"
+            # Smaller batch so consumer_offset commits are visible
+            # in the consumer_offsets table within minutes — default
+            # 1000 hides ~3h of progress at the current ~1 ev/s rate.
+            - name: EVENT_BATCH_SIZE
+              value: "{{ .Values.triggerBatchSize | default 50 }}"
             - name: KUMA_PUSH_URL
               valueFrom:
                 secretKeyRef:
