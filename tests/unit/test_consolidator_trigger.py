@@ -157,6 +157,7 @@ def test_concurrent_dispatch_threadpool(trigger):
     pool. We don't pin call ORDER (it's parallel) — just that all
     events reach the dispatch endpoint."""
     import threading
+    import time as _t
     trigger.concurrency = 4
     batch = [_envelope(60 + i, "UpsertCompany") for i in range(8)]
     seen_threads: set[str] = set()
@@ -165,9 +166,13 @@ def test_concurrent_dispatch_threadpool(trigger):
 
     def handler(req: httpx.Request) -> httpx.Response:
         body = req.read()
-        # parse seq out of the JSON body
         import json
         seq = json.loads(body).get("seq")
+        # Hold the worker briefly so the executor actually has to
+        # use multiple threads to drain the batch — without this
+        # delay an instant-return mock can serialise everything
+        # onto a single worker on under-loaded CI runners.
+        _t.sleep(0.05)
         with lock:
             posted.append(seq)
             seen_threads.add(threading.current_thread().name)
@@ -179,9 +184,10 @@ def test_concurrent_dispatch_threadpool(trigger):
     ):
         trigger.handle(batch)
     assert sorted(posted) == sorted(60 + i for i in range(8))
-    # With concurrency=4 and 8 events we expect at least 2 distinct
-    # worker threads — usually 4. Be lenient (CI is single-CPU
-    # sometimes) but assert it's actually parallel, not serial.
+    # With concurrency=4 and 8 events that each hold for 50ms we
+    # expect at least 2 distinct worker threads. Single-CPU CI is
+    # still timesharing, but the explicit sleep forces overlap so
+    # the pool MUST spin up >1 worker.
     assert len(seen_threads) >= 2, (
         f"expected concurrent dispatch, all ran on {seen_threads}"
     )
