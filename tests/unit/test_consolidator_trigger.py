@@ -150,3 +150,38 @@ def test_4xx_other_than_409_raises(trigger):
     ):
         with pytest.raises(httpx.HTTPStatusError):
             trigger.handle(batch)
+
+
+def test_concurrent_dispatch_threadpool(trigger):
+    """The bounded executor sends the whole batch through the
+    pool. We don't pin call ORDER (it's parallel) — just that all
+    events reach the dispatch endpoint."""
+    import threading
+    trigger.concurrency = 4
+    batch = [_envelope(60 + i, "UpsertCompany") for i in range(8)]
+    seen_threads: set[str] = set()
+    posted: list[int] = []
+    lock = threading.Lock()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = req.read()
+        # parse seq out of the JSON body
+        import json
+        seq = json.loads(body).get("seq")
+        with lock:
+            posted.append(seq)
+            seen_threads.add(threading.current_thread().name)
+        return httpx.Response(200, json={"outcome": "consolidated"})
+
+    with patch(
+        "src.consolidator.trigger.consumer.httpx.Client",
+        _client_factory(handler),
+    ):
+        trigger.handle(batch)
+    assert sorted(posted) == sorted(60 + i for i in range(8))
+    # With concurrency=4 and 8 events we expect at least 2 distinct
+    # worker threads — usually 4. Be lenient (CI is single-CPU
+    # sometimes) but assert it's actually parallel, not serial.
+    assert len(seen_threads) >= 2, (
+        f"expected concurrent dispatch, all ran on {seen_threads}"
+    )

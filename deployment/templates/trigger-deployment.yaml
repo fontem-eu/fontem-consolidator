@@ -64,6 +64,14 @@ spec:
                   key: EVENTS_DATABASE_URL
             - name: CONSOLIDATOR_URL
               value: http://gmr-consolidator.gmr.svc.cluster.local:8000
+            # Bounded fan-out: each batch is dispatched through a
+            # thread pool. Size is per-batch, so the upper bound on
+            # in-flight POSTs to gmr-consolidator at any moment is
+            # this value. Default 10 — pick higher only if the
+            # consolidator pod can keep up; resolver + Neo4j are
+            # the bottleneck, not the trigger.
+            - name: CONSOLIDATOR_TRIGGER_CONCURRENCY
+              value: "{{ .Values.triggerConcurrency | default 10 }}"
             - name: KUMA_PUSH_URL
               valueFrom:
                 secretKeyRef:
