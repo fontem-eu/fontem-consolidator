@@ -64,6 +64,13 @@ spec:
                   key: EVENTS_DATABASE_URL
             - name: CONSOLIDATOR_URL
               value: http://gmr-consolidator.gmr.svc.cluster.local:8000
+            # HTTP read timeout for the dispatch round-trip. Default
+            # 180s — consolidate() runs the resolver's fulltext +
+            # vector + GDS pipeline against Neo4j, which under cold
+            # cache or concurrent load can exceed the 60s httpx
+            # default. Tunable via triggerHttpTimeout.
+            - name: CONSOLIDATOR_HTTP_TIMEOUT
+              value: "{{ .Values.triggerHttpTimeout | default 180 }}"
             # Bounded fan-out: each batch is dispatched through a
             # thread pool. Size is per-batch, so the upper bound on
             # in-flight POSTs to gmr-consolidator at any moment is
