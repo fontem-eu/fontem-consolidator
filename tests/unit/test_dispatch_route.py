@@ -119,3 +119,30 @@ def test_dispatch_missing_payload_key_400s(client):
         )
     assert r.status_code == 400
     mock_cons.assert_not_awaited()
+
+
+def test_dispatch_excludes_only_node_similarity_gds_rules(client):
+    """Per-event dispatch must skip the expensive
+    gds_node_similarity_* rules but KEEP the cheap
+    gds_same_as_cluster_collapse_* rules — the latter is how
+    reviewed SAME_AS clusters actually become merges. A bare
+    ``gds_`` prefix would disable both, so we pin the more
+    specific one."""
+    c, _driver = client
+    fake_result = type("R", (), {
+        "run_id": "rid", "entity_type": "Company", "entity_id": "abc",
+        "decisions": [], "rules_fired": 0,
+    })()
+    with patch(
+        "src.api.routes.dispatch.engine.consolidate",
+        new=AsyncMock(return_value=fake_result),
+    ) as mock_cons:
+        c.post(
+            "/events/dispatch",
+            json=_payload("UpsertCompany", {"gmr_id": "abc"}),
+        )
+    kwargs = mock_cons.await_args.kwargs
+    assert kwargs["exclude_rule_prefix"] == "gds_node_similarity_", (
+        "If this changes back to 'gds_' (or to None), reviewed-cluster "
+        "collapse stops happening — duplicates accumulate after human review."
+    )

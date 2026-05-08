@@ -78,19 +78,29 @@ async def dispatch(req: DispatchRequest):
         )
 
     driver = await get_driver()
-    # Skip the gds_* rules on per-event dispatch. Each gds rule
-    # projects a fresh subgraph (millions of nodes for Company)
-    # and runs Jaccard / WCC across it — that's seconds per call
-    # and dominates the dispatch latency. The hourly cron sweep
-    # already runs the GDS rules globally; running them again
-    # per-event adds little signal beyond what the cron catches.
+    # Skip ONLY the structural-similarity GDS rules on per-event
+    # dispatch. ``gds_node_similarity_*`` reprojects the entire
+    # Company+Listing+Financial+Contract subgraph (~3.5M+ nodes)
+    # on every call and runs Jaccard against it — that's the ~7s
+    # we measured per dispatch. The signal it provides (same-
+    # entity-different-name pairs that share contracts/financials)
+    # is real but expensive; we'll revisit graph-based dedup as
+    # a separate periodic job rather than per-event.
+    #
+    # ``gds_same_as_cluster_collapse_*`` STAYS in the dispatch
+    # path — it's how reviewed SAME_AS clusters actually become
+    # merges (WCC over reviewed-only edges → canonical pick →
+    # apoc.refactor.mergeNodes). Cheap because the projected
+    # subgraph is just Company nodes + the small set of edges
+    # marked reviewed=true. Without it, human-reviewed pairs
+    # never get collapsed and duplicate nodes persist forever.
     result = await engine.consolidate(
         driver,
         settings.neo4j_database,
         entity_type=entity_type,
         entity_id=str(entity_id),
         triggered_by=f"event:{req.seq}",
-        exclude_rule_prefix="gds_",
+        exclude_rule_prefix="gds_node_similarity_",
     )
     logger.info(
         "dispatch seq={seq} type={t} → {entity_type}/{entity_id} "
