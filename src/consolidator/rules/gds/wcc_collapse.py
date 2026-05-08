@@ -35,6 +35,32 @@ class _GdsSameAsClusterCollapseBase(Rule):
         if not await gds_available(driver, "neo4j"):
             return []
 
+        # Cheap pre-check: only build a GDS projection if THIS
+        # entity has at least one reviewed-and-clean SAME_AS edge.
+        # Without this, every per-event dispatch projects the full
+        # ~3.3M-Company subgraph just to discover the entity isn't
+        # in any cluster — measured at ~5s/event.
+        #
+        # When in_cluster=true we still project the whole label
+        # plus reviewed edges (cheap because the WCC-relevant edge
+        # set is tiny), but only ~0.01% of entities actually
+        # belong to a reviewed cluster, so the average case is
+        # an indexed point lookup that returns false.
+        async with driver.session() as session:
+            res = await session.run(
+                f"""
+                MATCH (n:{self.anchor_label} {{{self.id_key}: $self_id}})
+                OPTIONAL MATCH (n)-[r:SAME_AS]-(:{self.anchor_label})
+                WHERE r.reviewed = true AND coalesce(r.conflict, false) = false
+                WITH r LIMIT 1
+                RETURN r IS NOT NULL AS in_cluster
+                """,
+                self_id=entity.id,
+            )
+            row = await res.single()
+        if row is None or not row["in_cluster"]:
+            return []
+
         node_q = f"""
             MATCH (n:{self.anchor_label})
             RETURN id(n) AS id, labels(n) AS labels
