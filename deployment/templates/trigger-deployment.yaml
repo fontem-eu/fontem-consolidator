@@ -73,11 +73,15 @@ spec:
             # timeout, 512m per-tx memory cap).
             - name: CONSOLIDATOR_TRIGGER_CONCURRENCY
               value: "{{ .Values.triggerConcurrency | default 3 }}"
-            # Smaller batch so consumer_offset commits are visible
-            # in the consumer_offsets table within minutes — default
-            # 1000 hides ~3h of progress at the current ~1 ev/s rate.
+            # Batch size matches concurrency by default. The
+            # EventConsumer commits offset once per batch, so with
+            # ~10s of work per consolidate(), batch=N means a commit
+            # every (N / concurrency) × 10s. Setting batch=concurrency
+            # keeps that to one commit per ~10s — offset progress
+            # tracks real work, and a pod crash never costs more
+            # than ``concurrency`` reprocessed events.
             - name: EVENT_BATCH_SIZE
-              value: "{{ .Values.triggerBatchSize | default 50 }}"
+              value: "{{ .Values.triggerBatchSize | default .Values.triggerConcurrency | default 3 }}"
             - name: KUMA_PUSH_URL
               valueFrom:
                 secretKeyRef:
