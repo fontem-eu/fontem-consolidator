@@ -43,10 +43,13 @@ class SuccessorLeiMatch(Rule):
 
         driver = await get_driver()
         async with driver.session() as session:
+            # name_clean is materialised by the Neo4j sink at
+            # projection time; the range index keeps this O(log N)
+            # rather than full-scanning 3.3M Companies.
             result = await session.run(
                 """
                 MATCH (b:Company)
-                WHERE apoc.text.clean(b.name) = apoc.text.clean($name)
+                WHERE b.name_clean = apoc.text.clean($name)
                   AND b.country = $country
                   AND b.gmr_id <> $self_id
                   AND b.lei IS NOT NULL

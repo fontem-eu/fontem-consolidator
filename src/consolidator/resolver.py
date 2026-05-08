@@ -162,11 +162,14 @@ _BY_CIK = (
     "       c.lei AS lei LIMIT 2"
 )
 
-# Tier 3: cleaned-name + country agreement. apoc.text.clean lowercases
-# and strips punctuation/whitespace; `LIMIT 2` lets us detect ambiguity.
+# Tier 3: cleaned-name + country agreement. apoc.text.clean
+# lowercases and strips punctuation/whitespace; `LIMIT 2` lets us
+# detect ambiguity. We compare against the materialised
+# ``name_clean`` property (sink-written) so the index on
+# ``name_clean`` answers in O(log N) instead of forcing a full scan.
 _BY_NAME_COUNTRY_COMPANY = (
     "MATCH (c:Company) "
-    "WHERE apoc.text.clean(c.name) = apoc.text.clean($name) "
+    "WHERE c.name_clean = apoc.text.clean($name) "
     "  AND coalesce(c.country, '') = $country "
     "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
     "       c.lei AS lei LIMIT 2"
@@ -174,7 +177,7 @@ _BY_NAME_COUNTRY_COMPANY = (
 
 _BY_NAME_COUNTRY_AUTHORITY = (
     "MATCH (a:Authority) "
-    "WHERE apoc.text.clean(a.name) = apoc.text.clean($name) "
+    "WHERE a.name_clean = apoc.text.clean($name) "
     "  AND coalesce(a.country, '') = $country "
     "RETURN a.authority_id AS gmr_id, a.name AS name, "
     "       a.country AS country, NULL AS lei LIMIT 2"

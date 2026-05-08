@@ -15,6 +15,16 @@ INDEX_CYPHER = [
     # Index lets us look up a company from any of its past LEIs when
     # ETL writes come in referencing an old identifier.
     "CREATE INDEX company_historic_leis IF NOT EXISTS FOR (c:Company) ON (c.historic_leis)",
+    # name_clean: pre-computed apoc.text.clean(name), materialised by
+    # the Neo4j sink at projection time. The resolver's Tier 3 +
+    # the dedup rules used to do
+    #   WHERE apoc.text.clean(c.name) = apoc.text.clean($name)
+    # which bypassed any index on c.name (function on a property
+    # forces a full scan; ~3.3M Company nodes ≈ 10s/query). After
+    # moving the cleaned form into a property we range-index it;
+    # the resolver query becomes a sub-100ms index lookup.
+    "CREATE INDEX company_name_clean IF NOT EXISTS FOR (c:Company) ON (c.name_clean)",
+    "CREATE INDEX authority_name_clean IF NOT EXISTS FOR (a:Authority) ON (a.name_clean)",
     # Vector index on Authority name_embedding (LaBSE, 768-d, cosine).
     # Powers the embedding_cosine_authority rule's k-NN lookup; without
     # it the rule would fall back to a full 61k × 768 dot-product scan
@@ -32,8 +42,44 @@ INDEX_CYPHER = [
 ]
 
 
+# One-shot backfill for ``name_clean`` on existing rows. Runs in
+# small chunks to avoid a 3.3M-row tx that would blow the
+# transaction memory cap. The CALL { ... } IN TRANSACTIONS form
+# commits per chunk so a partial failure leaves the cluster in a
+# valid state and the next pod restart picks up where we left off.
+BACKFILL_CYPHER = [
+    """
+    MATCH (c:Company)
+    WHERE c.name IS NOT NULL AND c.name_clean IS NULL
+    CALL (c) {
+        SET c.name_clean = apoc.text.clean(c.name)
+    } IN TRANSACTIONS OF 5000 ROWS
+    """,
+    """
+    MATCH (a:Authority)
+    WHERE a.name IS NOT NULL AND a.name_clean IS NULL
+    CALL (a) {
+        SET a.name_clean = apoc.text.clean(a.name)
+    } IN TRANSACTIONS OF 5000 ROWS
+    """,
+]
+
+
 async def apply(driver: AsyncDriver, database: str) -> None:
     async with driver.session(database=database) as session:
         for stmt in INDEX_CYPHER:
             await session.run(stmt)
-    logger.info("consolidator: neo4j indexes ensured ({} statements)", len(INDEX_CYPHER))
+    logger.info(
+        "consolidator: neo4j indexes ensured ({} statements)",
+        len(INDEX_CYPHER),
+    )
+    # Backfill runs implicit-tx style (CALL { } IN TRANSACTIONS
+    # requires it), so each statement uses its own session that
+    # the driver auto-commits.
+    for stmt in BACKFILL_CYPHER:
+        async with driver.session(database=database) as session:
+            await session.run(stmt)
+    logger.info(
+        "consolidator: name_clean backfill complete ({} statements)",
+        len(BACKFILL_CYPHER),
+    )
