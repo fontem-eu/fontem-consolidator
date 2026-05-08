@@ -83,10 +83,13 @@ class ExactNameCountryMatchAuthority(Rule):
         async with driver.session() as session:
             # apoc.text.clean strips whitespace + punctuation + lowercases so
             # minor typographic variants collapse to an exact match.
+            # We match against the sink-materialised ``name_clean``
+            # property so the range index on Authority.name_clean
+            # answers in O(log N).
             result = await session.run(
                 """
                 MATCH (a:Authority)
-                WHERE apoc.text.clean(a.name) = apoc.text.clean($name)
+                WHERE a.name_clean = apoc.text.clean($name)
                   AND a.country = $country
                   AND a.authority_id <> $self_id
                 RETURN a
@@ -151,10 +154,11 @@ class ExactNameAnyCountryAuthority(Rule):
 
         driver = await get_driver()
         async with driver.session() as session:
+            # name_clean indexed on Authority — keeps this O(log N).
             result = await session.run(
                 """
                 MATCH (a:Authority)
-                WHERE apoc.text.clean(a.name) = apoc.text.clean($name)
+                WHERE a.name_clean = apoc.text.clean($name)
                   AND a.authority_id <> $self_id
                   AND coalesce(a.country, "") <> coalesce($country, "")
                 RETURN a

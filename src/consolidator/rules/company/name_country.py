@@ -22,11 +22,13 @@ class ExactNameCountryMatch(Rule):
         async with driver.session() as session:
             # apoc.text.clean strips non-alphanumerics + lowercases, so
             # "NEURAXPHARM FRANCE ( Rang 1)" == "NEURAXPHARM FRANCE (Rang 1)"
-            # == "NEURAXPHARM FRANCE  (Rang 1)" all collapse.
+            # == "NEURAXPHARM FRANCE  (Rang 1)" all collapse. We match
+            # against the sink-materialised ``name_clean`` property so
+            # the index on Company.name_clean keeps this O(log N).
             result = await session.run(
                 """
                 MATCH (c:Company)
-                WHERE apoc.text.clean(c.name) = apoc.text.clean($name)
+                WHERE c.name_clean = apoc.text.clean($name)
                   AND c.country = $country
                   AND c.gmr_id <> $self_id
                 RETURN c
