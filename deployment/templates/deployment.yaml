@@ -75,3 +75,11 @@ spec:
                 secretKeyRef:
                   name: neo4j-credentials
                   key: NEO4J_PASSWORD
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

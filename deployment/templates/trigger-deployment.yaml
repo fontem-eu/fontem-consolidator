@@ -62,8 +62,13 @@ spec:
                 secretKeyRef:
                   name: gmr-postgres-credentials
                   key: EVENTS_DATABASE_URL
+            # Address the consolidator in the same namespace this chart is
+            # installed into. The previous hardcode (`gmr.svc.cluster.local`)
+            # broke real prod's deployment — fontem-prod's trigger would
+            # have dispatched to the *staging* consolidator (which talks
+            # to staging's Neo4j) instead of its co-located prod sibling.
             - name: CONSOLIDATOR_URL
-              value: http://gmr-consolidator.gmr.svc.cluster.local:8000
+              value: http://gmr-consolidator.{{ .Release.Namespace }}.svc.cluster.local:8000
             # HTTP read timeout for the dispatch round-trip. Default
             # 180s — consolidate() runs the resolver's fulltext +
             # vector + GDS pipeline against Neo4j, which under cold
@@ -105,6 +110,14 @@ spec:
             httpGet: { path: /metrics, port: 9100 }
             periodSeconds: 30
             failureThreshold: 3
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
