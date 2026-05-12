@@ -20,7 +20,15 @@ metadata:
     app: consolidator-trigger
     component: event-consumer
 spec:
-  replicas: 1
+  # Single replica by default — one event consumer per offset row in
+  # events.consumer_offsets. Set `triggerReplicas: 0` in prod overlays
+  # to pause the consumer during storage migrations / replays without
+  # touching the rest of the chart.
+  #
+  # `| default 1` would treat 0 as falsy (helm gotcha), so use an
+  # explicit nil check instead — only fall back to 1 when the key is
+  # unset, accept 0 when explicitly set.
+  replicas: {{ if hasKey .Values "triggerReplicas" }}{{ .Values.triggerReplicas }}{{ else }}1{{ end }}
   strategy:
     type: Recreate
   selector:
