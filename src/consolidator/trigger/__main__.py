@@ -8,7 +8,7 @@ Configured entirely via env (see ``gmr_events.consumer.ConsumerConfig``):
                               gate against (e.g. "neo4j_sink")
   EVENT_BATCH_SIZE          — default 1000
   EVENT_POLL_INTERVAL       — default 5.0s
-  CONSOLIDATOR_URL          — http URL to the gmr-consolidator service
+  CONSOLIDATOR_URL          — http URL to the fontem-consolidator service
   CONSOLIDATOR_HTTP_TIMEOUT — default 60s
   METRICS_PORT              — default 9100
   KUMA_PUSH_URL             — optional heartbeat URL

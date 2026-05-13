@@ -28,7 +28,7 @@ async def lifespan(_: FastAPI):
     await neo4j_client.close_driver()
 
 
-app = FastAPI(title="gmr-consolidator", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="fontem-consolidator", version="0.1.0", lifespan=lifespan)
 app.include_router(consolidate_router)
 app.include_router(candidates_router)
 app.include_router(decisions_router)

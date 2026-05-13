@@ -82,7 +82,7 @@ async def emit_assert_same_as(
     tier: str | None = None,
     matched_via_alias: bool = False,
     domain: str = "consolidation",
-    producer: str = "gmr-consolidator",
+    producer: str = "fontem-consolidator",
 ) -> int | None:
     """Emit an AssertSameAs event into ``events.entity_events``.
 

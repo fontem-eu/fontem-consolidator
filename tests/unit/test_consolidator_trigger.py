@@ -34,7 +34,7 @@ def trigger():
     """Construct the trigger with env stubbed; bypass EventConsumer's
     Postgres-touching __init__ pieces by passing a config directly."""
     with patch.dict(os.environ, {
-        "CONSOLIDATOR_URL": "http://gmr-consolidator.test:8000",
+        "CONSOLIDATOR_URL": "http://fontem-consolidator.test:8000",
         "EVENT_CONSUMER_NAME": "consolidator_trigger",
         "EVENTS_DATABASE_URL": "postgresql://stub",
     }):

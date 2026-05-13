@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   namespace: {{ .Release.Namespace }}
-  name: gmr-consolidator
+  name: fontem-consolidator
   labels:
-    app: gmr-consolidator
+    app: fontem-consolidator
 spec:
   replicas: {{ .Values.replicas | default 1 }}
   strategy:
@@ -14,13 +14,13 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: gmr-consolidator
+      app: fontem-consolidator
   template:
     metadata:
       labels:
-        app: gmr-consolidator
+        app: fontem-consolidator
         kube-monkey/enabled: enabled
-        kube-monkey/identifier: gmr-consolidator
+        kube-monkey/identifier: fontem-consolidator
         kube-monkey/mtbf: "2"
         kube-monkey/kill-mode: fixed
         kube-monkey/kill-value: "1"
@@ -32,8 +32,8 @@ spec:
       imagePullSecrets:
         - name: regcred
       containers:
-        - name: gmr-consolidator
-          image: contribute.void42.internal/fontem/gmr-consolidator:{{ .Values.version }}
+        - name: fontem-consolidator
+          image: contribute.void42.internal/fontem/fontem-consolidator:{{ .Values.version }}
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

@@ -75,7 +75,7 @@ process_batch() {
   # stdout: short status string
   local entity_type="$1" ids_json
   ids_json=$(printf '%s\n' "$2" | python3 -c 'import sys,json; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))')
-  kubectl exec -n "$CONSOLIDATOR_NS" deployment/gmr-consolidator -c gmr-consolidator -- \
+  kubectl exec -n "$CONSOLIDATOR_NS" deployment/fontem-consolidator -c fontem-consolidator -- \
     python3 -c "
 import sys, json, urllib.request, urllib.error
 body = json.dumps({'entity_type': '$entity_type', 'ids': $ids_json, 'triggered_by': 'full_scan', 'exclude_rule_prefix': '$EXCLUDE_RULE_PREFIX' or None}).encode()

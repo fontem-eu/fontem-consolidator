@@ -51,7 +51,7 @@ spec:
         - name: regcred
       containers:
         - name: trigger
-          image: contribute.void42.internal/fontem/gmr-consolidator:{{ .Values.version }}
+          image: contribute.void42.internal/fontem/fontem-consolidator:{{ .Values.version }}
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "src.consolidator.trigger"]
           ports:
@@ -76,7 +76,7 @@ spec:
             # have dispatched to the *staging* consolidator (which talks
             # to staging's Neo4j) instead of its co-located prod sibling.
             - name: CONSOLIDATOR_URL
-              value: http://gmr-consolidator.{{ .Release.Namespace }}.svc.cluster.local:8000
+              value: http://fontem-consolidator.{{ .Release.Namespace }}.svc.cluster.local:8000
             # HTTP read timeout for the dispatch round-trip. Default
             # 180s — consolidate() runs the resolver's fulltext +
             # vector + GDS pipeline against Neo4j, which under cold
@@ -86,7 +86,7 @@ spec:
               value: "{{ .Values.triggerHttpTimeout | default 180 }}"
             # Bounded fan-out: each batch is dispatched through a
             # thread pool. Size is per-batch, so the upper bound on
-            # in-flight POSTs to gmr-consolidator at any moment is
+            # in-flight POSTs to fontem-consolidator at any moment is
             # this value. Resolver + Neo4j are the bottleneck;
             # pick higher only when Neo4j has the cache + tx-timeout
             # budget for it (current values: 2g pagecache, 90s tx

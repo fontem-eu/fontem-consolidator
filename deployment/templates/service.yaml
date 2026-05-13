@@ -2,13 +2,13 @@ apiVersion: v1
 kind: Service
 metadata:
   namespace: {{ .Release.Namespace }}
-  name: gmr-consolidator
+  name: fontem-consolidator
   labels:
-    app: gmr-consolidator
+    app: fontem-consolidator
 spec:
   type: ClusterIP
   selector:
-    app: gmr-consolidator
+    app: fontem-consolidator
   ports:
     - name: http
       port: 8000
