@@ -1,6 +1,6 @@
 """Entrypoint for the consolidator-trigger Deployment.
 
-Configured entirely via env (see ``gmr_events.consumer.ConsumerConfig``):
+Configured entirely via env (see ``fontem_events.consumer.ConsumerConfig``):
 
   EVENT_CONSUMER_NAME       — e.g. "consolidator_trigger"
   EVENTS_DATABASE_URL       — Postgres DSN for the event log

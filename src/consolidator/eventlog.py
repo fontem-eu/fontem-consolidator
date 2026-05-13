@@ -1,4 +1,4 @@
-"""Thin async shim around ``gmr_events.EventLog`` for emitting
+"""Thin async shim around ``fontem_events.EventLog`` for emitting
 events from inside the consolidator (which is otherwise async).
 
 Lazy: nothing is connected unless an event is actually emitted.
@@ -26,7 +26,7 @@ _log_singleton = None  # type: ignore[var-annotated]
 
 
 def _get_log():
-    """Return the lazily-constructed gmr_events EventLog (or None
+    """Return the lazily-constructed fontem_events EventLog (or None
     if the env isn't configured)."""
     global _log_singleton
     if _log_singleton is not None:
@@ -40,7 +40,7 @@ def _get_log():
             )
             return None
         try:
-            from gmr_events import EventLog  # local import: optional dep
+            from fontem_events import EventLog  # local import: optional dep
         except ImportError:  # pragma: no cover
             logger.warning(
                 "eventlog: gmr-events not installed, emit will no-op"
@@ -94,7 +94,7 @@ async def emit_assert_same_as(
     Returns the event seq, or None if the emit was skipped or failed.
     """
     try:
-        from gmr_event_schemas.builders import assert_same_as
+        from fontem_event_schemas.builders import assert_same_as
     except ImportError:  # pragma: no cover
         logger.warning(
             "eventlog: gmr-event-schemas not installed, skipping emit"

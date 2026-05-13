@@ -38,7 +38,7 @@ def trigger():
         "EVENT_CONSUMER_NAME": "consolidator_trigger",
         "EVENTS_DATABASE_URL": "postgresql://stub",
     }):
-        from gmr_events.consumer import ConsumerConfig
+        from fontem_events.consumer import ConsumerConfig
         from src.consolidator.trigger.consumer import ConsolidatorTrigger
         cfg = ConsumerConfig(
             name="consolidator_trigger",

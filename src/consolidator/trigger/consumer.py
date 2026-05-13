@@ -30,8 +30,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
-from gmr_event_schemas import EventEnvelope
-from gmr_events.consumer import EventConsumer
+from fontem_event_schemas import EventEnvelope
+from fontem_events.consumer import EventConsumer
 
 logger = logging.getLogger(__name__)
 
