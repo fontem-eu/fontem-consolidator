@@ -33,7 +33,7 @@ spec:
         - name: regcred
       containers:
         - name: gmr-consolidator
-          image: contribute.void42.internal/golden/gmr-consolidator:{{ .Values.version }}
+          image: contribute.void42.internal/fontem/gmr-consolidator:{{ .Values.version }}
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

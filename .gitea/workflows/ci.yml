@@ -21,10 +21,10 @@ jobs:
           # event-log trigger / dispatch route depend on these.
           tmpdir=$(mktemp -d)
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/gmr-event-schemas.git" \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
               "$tmpdir/gmr-event-schemas"
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/gmr-events.git" \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
               "$tmpdir/gmr-events"
           pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
       - name: Unit tests
@@ -51,7 +51,7 @@ jobs:
           for repo in gmr-event-schemas gmr-events; do
               rm -rf "vendor/$repo"
               git clone --depth 1 \
-                  "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/golden/${repo}.git" \
+                  "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/${repo}.git" \
                   "vendor/$repo"
               rm -rf "vendor/$repo/.git"
           done
@@ -60,8 +60,8 @@ jobs:
           TAG="v$(git rev-parse --short HEAD)"
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login gitea-http.dev-tools.svc.cluster.local:3000 -u "${{ secrets.REGISTRY_USER }}" --password-stdin
-          docker build --network host -t gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG .
-          docker push gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG
+          docker build --network host -t gitea-http.dev-tools.svc.cluster.local:3000/fontem/gmr-consolidator:$TAG .
+          docker push gitea-http.dev-tools.svc.cluster.local:3000/fontem/gmr-consolidator:$TAG
       - name: Sign image with Cosign
         env:
           COSIGN_PASSWORD: ""
@@ -70,11 +70,11 @@ jobs:
           curl -sL https://nexus.void42.internal/repository/github-releases/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o /usr/local/bin/cosign
           chmod +x /usr/local/bin/cosign
           echo "$COSIGN_KEY" > /tmp/cosign.key
-          cosign sign --key /tmp/cosign.key --yes --allow-http-registry gitea-http.dev-tools.svc.cluster.local:3000/golden/gmr-consolidator:$TAG
+          cosign sign --key /tmp/cosign.key --yes --allow-http-registry gitea-http.dev-tools.svc.cluster.local:3000/fontem/gmr-consolidator:$TAG
           rm /tmp/cosign.key
       - name: Deploy to gitops (prod — singleton)
         run: |
-          git clone --depth=1 http://oauth2:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/golden/gitops.git /tmp/gitops
+          git clone --depth=1 http://oauth2:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/fontem/gitops.git /tmp/gitops
           cd /tmp/gitops
           sed -i 's/version: ".*"/version: "'$TAG'"/' prod/gmr-consolidator.yaml
           git config user.name "GMR CI"

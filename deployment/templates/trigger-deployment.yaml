@@ -51,7 +51,7 @@ spec:
         - name: regcred
       containers:
         - name: trigger
-          image: contribute.void42.internal/golden/gmr-consolidator:{{ .Values.version }}
+          image: contribute.void42.internal/fontem/gmr-consolidator:{{ .Values.version }}
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "src.consolidator.trigger"]
           ports:
