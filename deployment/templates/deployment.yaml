@@ -60,6 +60,8 @@ spec:
           env:
             - name: CONSOLIDATOR_AUTO_MERGE_ENABLED
               value: "{{ .Values.autoMergeEnabled }}"
+            - name: CONSOLIDATOR_LINGUISTICS_URL
+              value: "{{ .Values.linguisticsUrl | default "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080" }}"
             - name: CONSOLIDATOR_NEO4J_URI
               valueFrom:
                 secretKeyRef:

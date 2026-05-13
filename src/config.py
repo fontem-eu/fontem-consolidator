@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # gmr-linguistics — translation + embedding service. Deployed only in
     # prod (singleton); non-prod consolidators point at the same URL.
-    linguistics_url: str = "http://gmr-linguistics.gmr.svc.cluster.local:8080"
+    linguistics_url: str = "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080"
     linguistics_enabled: bool = True
     linguistics_timeout_s: float = 60.0
     linguistics_translation_backend: str = "mistral"
