@@ -1,5 +1,5 @@
 {{- /*
-consolidator-trigger — gmr-events EventConsumer that POSTs each
+consolidator-trigger — fontem-events EventConsumer that POSTs each
 input event to the consolidator's /events/dispatch endpoint after
 the Neo4j sink has projected it.
 
@@ -68,7 +68,7 @@ spec:
             - name: EVENTS_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: gmr-postgres-credentials
+                  name: fontem-postgres-credentials
                   key: EVENTS_DATABASE_URL
             # Address the consolidator in the same namespace this chart is
             # installed into. The previous hardcode (`gmr.svc.cluster.local`)
