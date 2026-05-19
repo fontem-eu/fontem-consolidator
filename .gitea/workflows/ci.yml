@@ -75,8 +75,10 @@ jobs:
       - name: Deploy to gitops (prod — singleton)
         run: |
           # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects
-          # the registry deploy token even when the same combo works
-          # for `docker login` to the gitea registry.
+          # the registry deploy token even when the same credential
+          # works for `docker login` to the gitea registry.
+          set -euo pipefail
+          rm -rf /tmp/gitops
           git clone --depth=1 "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/fontem/gitops.git" /tmp/gitops
           cd /tmp/gitops
           sed -i 's/version: ".*"/version: "'$TAG'"/' prod/fontem-consolidator.yaml
