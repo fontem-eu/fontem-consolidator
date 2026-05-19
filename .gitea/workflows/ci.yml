@@ -74,7 +74,10 @@ jobs:
           rm /tmp/cosign.key
       - name: Deploy to gitops (prod — singleton)
         run: |
-          git clone --depth=1 http://oauth2:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/fontem/gitops.git /tmp/gitops
+          # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects
+          # the registry deploy token even when the same combo works
+          # for `docker login` to the gitea registry.
+          git clone --depth=1 "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/fontem/gitops.git" /tmp/gitops
           cd /tmp/gitops
           sed -i 's/version: ".*"/version: "'$TAG'"/' prod/fontem-consolidator.yaml
           git config user.name "GMR CI"
