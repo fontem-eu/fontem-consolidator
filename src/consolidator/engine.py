@@ -153,6 +153,28 @@ async def consolidate(
                     details={**decision.details, "auto_merged_above_threshold": rule.auto_merge_threshold},
                 )
 
+            # Stamp the rule's `force_auto_merge` opt-in into the
+            # decision so actions.execute can bypass the global
+            # `auto_merge_enabled` gate for deterministic identifier
+            # matches. Conflict-flagged decisions never get the
+            # stamp (the conflict branch in conflict.py emits
+            # action=flag with details.conflict=True, which keeps
+            # them out of this code path anyway).
+            if (
+                rule.force_auto_merge
+                and decision.action == "merge"
+                and not decision.details.get("conflict", False)
+            ):
+                decision = Decision(
+                    rule_name=decision.rule_name,
+                    action=decision.action,
+                    source_id=decision.source_id,
+                    target_id=decision.target_id,
+                    confidence=decision.confidence,
+                    entity_type=decision.entity_type,
+                    details={**decision.details, "force_auto_merge": True},
+                )
+
             outcome = await actions.execute(
                 driver, database, decision=decision, entity=entity, candidate=candidate
             )

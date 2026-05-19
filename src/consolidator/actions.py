@@ -6,7 +6,10 @@ subsequent rules for that pair are skipped.
 
 When settings.auto_merge_enabled is False, any "merge" decision is downgraded
 to a "flag" (writes :SAME_AS {reviewed:false} instead of collapsing the nodes).
-This is the safety valve for the initial rollout.
+This is the safety valve for the initial rollout. **Per-rule override**: a
+decision whose details carry `force_auto_merge: True` (stamped by the engine
+when the firing rule sets `Rule.force_auto_merge = True`) bypasses the global
+gate. Reserved for deterministic identifier matches — see `rules/base.py`.
 
 Event-log emission: every match (flag, conflict, merge) ALSO emits an
 ``AssertSameAs`` event into ``events.entity_events`` so the Virtuoso
@@ -149,7 +152,12 @@ async def execute(
     when auto_merge is disabled or a conflict is detected).
     """
     if decision.action == "merge":
-        if not settings.auto_merge_enabled:
+        # The per-rule force_auto_merge stamp lets deterministic rules
+        # (exact LEI/CIK/VAT/authority-id, SAME_AS cluster collapse,
+        # GLEIF successor) merge even when the global gate is OFF.
+        # See rules/base.py:Rule.force_auto_merge.
+        forced = bool(decision.details.get("force_auto_merge"))
+        if not settings.auto_merge_enabled and not forced:
             await _flag_same_as(driver, database, decision=decision, reviewed=False)
             await _emit_same_as_event(decision)
             return "flag"

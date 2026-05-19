@@ -87,6 +87,60 @@ async def test_merge_emits_assert_same_as_when_auto_merge_on():
 
 
 @pytest.mark.asyncio
+async def test_merge_force_auto_merge_bypasses_global_gate():
+    """force_auto_merge=True in decision.details merges even when
+    settings.auto_merge_enabled is False. This is how the
+    deterministic identifier rules (exact LEI/CIK/VAT/authority-id,
+    SAME_AS cluster collapse, GLEIF successor) avoid filling the
+    review queue with self-evident matches.
+    """
+    driver = MagicMock()
+    candidate = MagicMock()
+    entity = Entity(entity_type="Company", id="A", properties={})
+    decision = Decision(
+        rule_name="exact_lei_match", action="merge", source_id="A", target_id="B",
+        confidence=1.0, entity_type="Company",
+        details={"force_auto_merge": True},
+    )
+    with patch.object(actions, "_merge", new=AsyncMock()) as merge_, \
+         patch.object(actions, "_flag_same_as", new=AsyncMock()) as flag_, \
+         patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
+         patch.object(actions.settings, "auto_merge_enabled", False):
+        outcome = await actions.execute(
+            driver, "neo4j",
+            decision=decision,
+            entity=entity,
+            candidate=candidate,
+        )
+    assert outcome == "auto_merge"
+    merge_.assert_awaited_once()
+    flag_.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_merge_without_force_respects_global_gate():
+    """No force_auto_merge stamp → respects the global gate.
+    Confirms the bypass is opt-in, not a blanket override.
+    """
+    driver = MagicMock()
+    candidate = MagicMock()
+    entity = Entity(entity_type="Company", id="A", properties={})
+    with patch.object(actions, "_merge", new=AsyncMock()) as merge_, \
+         patch.object(actions, "_flag_same_as", new=AsyncMock()) as flag_, \
+         patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
+         patch.object(actions.settings, "auto_merge_enabled", False):
+        outcome = await actions.execute(
+            driver, "neo4j",
+            decision=_decision("merge"),
+            entity=entity,
+            candidate=candidate,
+        )
+    assert outcome == "flag"
+    flag_.assert_awaited_once()
+    merge_.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_link_does_not_emit_assert_same_as():
     """Link is not an equivalence — it's a typed edge (RELATED_TO etc.)."""
     driver = MagicMock()

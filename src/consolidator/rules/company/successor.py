@@ -27,6 +27,12 @@ class SuccessorLeiMatch(Rule):
     entity_types = {"Company"}
     confidence = 0.98
     action = "merge"
+    # GLEIF emits successor links explicitly: the cypher above
+    # demands active+inactive + same name_clean + same country + same
+    # LOU prefix, which is the documented "same real-world entity,
+    # re-registered with a new LEI" pattern. As deterministic as the
+    # exact-LEI rule for our purposes — bypass the global gate.
+    force_auto_merge = True
 
     async def applies(self, entity: Entity) -> bool:
         # We only initiate successor consolidation from the ACTIVE side.

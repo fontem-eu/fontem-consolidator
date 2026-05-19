@@ -21,6 +21,12 @@ from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 class _GdsSameAsClusterCollapseBase(Rule):
     action = "merge"
     confidence = 1.0
+    # Cluster collapse only fires for entities connected by SAME_AS
+    # edges that another rule has already marked `reviewed=true` (the
+    # `projected_subgraph` query upstream filters on it). So by the
+    # time this rule emits a merge, the equivalence has already been
+    # vetted — auto-merge is safe regardless of the global gate.
+    force_auto_merge = True
 
     anchor_label: str
     id_key: str

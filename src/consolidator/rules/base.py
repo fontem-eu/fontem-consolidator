@@ -42,6 +42,15 @@ class Rule(ABC):
     # canary sweeps — see commit history on the rule classes for the
     # data those numbers came from.
     auto_merge_threshold: float | None = None
+    # When True, decisions from this rule auto-merge even when the
+    # global `settings.auto_merge_enabled` gate is OFF. Reserved for
+    # extremely confident, deterministic rules (exact identifier
+    # match, SAME_AS-cluster collapse, GLEIF successor): "two records
+    # report the same value for this hard identifier" is, by
+    # definition, the same legal entity. Conflict-flagged pairs
+    # (mismatched VAT/LEI/etc.) are still refused — the engine routes
+    # those via `_flag_same_as` regardless of this flag.
+    force_auto_merge: bool = False
 
     def describe(self) -> dict:
         return {
@@ -50,6 +59,7 @@ class Rule(ABC):
             "confidence": self.confidence,
             "action": self.action,
             "auto_merge_threshold": self.auto_merge_threshold,
+            "force_auto_merge": self.force_auto_merge,
             "description": self.description,
         }
 

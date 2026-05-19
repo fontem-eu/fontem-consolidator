@@ -27,6 +27,9 @@ class ExactAuthorityIdMatch(Rule):
     entity_types = {"Authority"}
     confidence = 1.0
     action = "merge"
+    # Same logic as the company exact-identifier rules: hard ID
+    # collision is deterministic, bypass the global gate.
+    force_auto_merge = True
 
     async def applies(self, entity: Entity) -> bool:
         return bool(entity.properties.get("authority_id"))

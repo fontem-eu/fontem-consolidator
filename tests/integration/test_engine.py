@@ -55,7 +55,14 @@ async def test_exact_lei_auto_merges(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_exact_lei_flags_when_auto_disabled(driver, monkeypatch):
+async def test_exact_lei_force_auto_merges_even_when_gate_disabled(driver, monkeypatch):
+    """ExactLeiMatch sets `force_auto_merge = True` — same LEI on two
+    Company nodes is the canonical same-entity signal (LEIs are
+    issued one-per-entity by definition). The decision must merge
+    even when the global `auto_merge_enabled` gate is False, because
+    routing this to the review queue would create unbounded review
+    backlog for every GLEIF + EU-listings + US-companies overlap.
+    """
     monkeypatch.setattr(settings, "auto_merge_enabled", False)
     await _create_company(driver, gmr_id="A", lei="LEI-Y", name="Acme")
     await _create_company(driver, gmr_id="B", lei="LEI-Y", name="Acme Inc")
@@ -64,17 +71,34 @@ async def test_exact_lei_flags_when_auto_disabled(driver, monkeypatch):
         driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
     )
 
-    same_as = await _count(
-        driver,
-        "MATCH (:Company {gmr_id:'A'})-[r:SAME_AS]->(:Company {gmr_id:'B'}) RETURN count(r)",
-    )
-    assert same_as == 1
-    flags = await _count(
-        driver, "MATCH (:DecisionLog {decision_type:'flag'}) RETURN count(*)"
-    )
-    assert flags >= 1
     remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
-    assert remaining == 2  # no merge
+    assert remaining == 1  # merged despite gate=False
+    auto_merges = await _count(
+        driver, "MATCH (:DecisionLog {decision_type:'auto_merge'}) RETURN count(*)"
+    )
+    assert auto_merges >= 1
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_match_still_flags_when_gate_disabled(driver, monkeypatch):
+    """Fuzzy name matching (`FuzzyNameSameCountry`) is NOT a
+    deterministic-identifier rule — it stays subject to the global
+    gate. Verifies force_auto_merge is opt-in per rule, not a
+    cross-the-board override.
+    """
+    monkeypatch.setattr(settings, "auto_merge_enabled", False)
+    # Two companies with NO shared hard identifier, only similar
+    # names + same country — exercises the fuzzy path, not the LEI
+    # path.
+    await _create_company(driver, gmr_id="C", name="ACME CORPORATION", country="US")
+    await _create_company(driver, gmr_id="D", name="ACME CORP", country="US")
+
+    await engine.consolidate(
+        driver, "neo4j", entity_type="Company", entity_id="C", triggered_by="test"
+    )
+
+    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
+    assert remaining == 2  # NOT merged — fuzzy rules respect the global gate
 
 
 @pytest.mark.asyncio

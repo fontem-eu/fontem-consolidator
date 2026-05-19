@@ -13,6 +13,12 @@ class _ExactIdRule(Rule):
     entity_types = {"Company"}
     confidence = 1.0
     action = "merge"
+    # "Two Companies report the same LEI/CIK/VAT" is the canonical
+    # same-entity signal (legal identifiers are issued one-per-entity
+    # by definition). Bypass the global auto_merge_enabled gate —
+    # conflicting *other* identifiers still route to the flag queue
+    # via the conflict_decision branch above.
+    force_auto_merge = True
 
     id_property: str  # subclass fills in
     _driver_factory = None  # injected at service startup
