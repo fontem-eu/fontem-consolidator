@@ -1,4 +1,10 @@
-fastapi==0.116.0
+fastapi==0.136.1
+# Explicit starlette pin overrides fastapi's transitive `>=0.46.0` —
+# 0.46.x had CVE-2025-54121 (multipart DoS) and 0.48.x had
+# CVE-2025-62727 (header parsing). 0.49.1 is the first version that
+# clears both. fastapi 0.136.1 dropped the upper bound on starlette
+# (`>=0.46.0` only), so the pin is compatible.
+starlette==0.49.1
 uvicorn[standard]==0.32.1
 neo4j==5.27.0
 graphdatascience==1.20
