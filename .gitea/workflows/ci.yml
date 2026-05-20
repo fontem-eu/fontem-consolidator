@@ -34,6 +34,40 @@ jobs:
         # disables, pytest testpaths) lives in pyproject.toml.
         run: python3 -m pylint src/consolidator tests
 
+  analyze:
+    needs: test
+    runs-on: python
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install + coverage
+        env:
+          PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
+          PIP_TRUSTED_HOST: nexus.void42.internal
+          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+        run: |
+          # Mirror the install steps from the `test` job: dev deps
+          # (which include pytest-cov) plus the two internal-only
+          # packages cloned from Gitea with GMR_CI_READ_TOKEN, then
+          # run pytest with coverage so the Sonar scan has data.
+          pip install --no-cache-dir -r requirements-dev.txt
+          tmpdir=$(mktemp -d)
+          git clone --depth 1 \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "$tmpdir/gmr-event-schemas"
+          git clone --depth 1 \
+              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
+              "$tmpdir/gmr-events"
+          pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
+          python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml || true
+      - uses: actions/checkout@v4
+        with:
+          repository: void42/fontem-ci
+          path: .fontem-ci
+          token: ${{ secrets.GMR_CI_READ_TOKEN }}
+      - uses: ./.fontem-ci/actions/sonar-scan
+        with:
+          sonar-token: ${{ secrets.SONAR_TOKEN }}
+
   build-deploy:
     needs: test
     if: github.ref == 'refs/heads/main'
