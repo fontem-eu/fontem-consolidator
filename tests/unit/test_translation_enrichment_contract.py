@@ -4,6 +4,13 @@ Covers applies() gating, resolve() happy path, fail-soft on transport /
 5xx, the per-request `translation_backend` override plumbing, and rule
 registration.
 """
+# protected-access: tests reach into the rule's `_client` and the
+# loader's `_loaded` / registry `_REGISTRY` — the private surfaces
+# the enrichment contract pins.
+# import-outside-toplevel: registry / loader / clients are
+# imported inside test bodies so per-test patches activate
+# before module-import side effects.
+# pylint: disable=protected-access,import-outside-toplevel
 from __future__ import annotations
 
 import httpx

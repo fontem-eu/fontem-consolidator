@@ -34,9 +34,14 @@ class _GdsSameAsClusterCollapseBase(Rule):
     async def applies(self, entity: Entity) -> bool:
         return entity.entity_type == self.anchor_label
 
-    async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+    # The WCC pipeline (pre-check + projection + stream + canonical
+    # selection) keeps every intermediate readable inline rather than
+    # spreading them across helpers that would share the same labels.
+    async def find_candidates(self, entity: Entity) -> list[Candidate]:  # pylint: disable=too-many-locals
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver: AsyncDriver = await get_driver()
         if not await gds_available(driver, "neo4j"):
             return []
@@ -101,7 +106,9 @@ class _GdsSameAsClusterCollapseBase(Rule):
                         self_id=entity.id,
                     )
                     records = [rec async for rec in result]
-        except Exception:
+        # GDS projection / WCC may fail on tiny test graphs — treat as
+        # "no candidates" rather than aborting the pipeline.
+        except Exception:  # pylint: disable=broad-exception-caught
             return []
 
         if not records:

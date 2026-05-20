@@ -4,6 +4,14 @@ Uses a patched `get_driver` / `close_driver` pair so the app lifespan doesn't
 touch real I/O at startup or shutdown and doesn't leak a real MagicMock
 through the module-level `_driver` global.
 """
+# protected-access: this fixture intentionally resets the
+# `_driver` module-level cache in src.consolidator.neo4j.client
+# between tests so a previous test's MagicMock can't leak; the
+# private accessor is the cleanest place to pin that behaviour.
+# import-outside-toplevel: app/`neo4j_client` are imported lazily
+# inside the fixture so module-import-time side effects don't run
+# before the patches above are active.
+# pylint: disable=protected-access,import-outside-toplevel
 
 from unittest.mock import AsyncMock, patch
 

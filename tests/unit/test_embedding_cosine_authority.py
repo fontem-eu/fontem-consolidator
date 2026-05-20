@@ -2,9 +2,15 @@
 index query shape, Decision mapping, registered-in-loader, encoder
 allowlist.
 """
+# protected-access: the loader's `_loaded` / registry `_REGISTRY`
+# are reset between tests so the per-test rule set is deterministic.
+# import-outside-toplevel: registry / loader are imported inside
+# tests so the reset happens before module-import side effects.
+# too-few-public-methods: in-test stub classes deliberately expose
+# only the attributes the rule reads.
+# pylint: disable=protected-access,import-outside-toplevel,too-few-public-methods
 from __future__ import annotations
 
-from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

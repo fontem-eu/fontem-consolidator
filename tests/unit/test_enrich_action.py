@@ -1,6 +1,10 @@
 """Tests for the _enrich action executor — specifically the encoder-id
 invariants and the prop-name layout on the Cypher write.
 """
+# protected-access: tests drive the action by calling actions._enrich
+# directly — pinning the encoder/embedding cypher contract that the
+# public execute() dispatcher routes to.
+# pylint: disable=protected-access
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -23,15 +27,15 @@ def _decision(**overrides) -> Decision:
         "source_lang": None,
     }
     details.update(overrides.pop("details", {}))
-    base = dict(
-        rule_name="translation_enrichment_authority",
-        action="enrich",
-        source_id="AUTH-1",
-        target_id="AUTH-1",
-        confidence=1.0,
-        entity_type="Authority",
-        details=details,
-    )
+    base = {
+        "rule_name": "translation_enrichment_authority",
+        "action": "enrich",
+        "source_id": "AUTH-1",
+        "target_id": "AUTH-1",
+        "confidence": 1.0,
+        "entity_type": "Authority",
+        "details": details,
+    }
     base.update(overrides)
     return Decision(**base)
 

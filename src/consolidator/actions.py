@@ -202,7 +202,11 @@ async def _emit_same_as_event(decision: Decision) -> None:
     )
 
 
-async def _merge(
+# `entity` / `candidate` kwargs are part of the executor dispatch
+# uniform contract (every action handler takes the same shape, even
+# when the merge path drives everything off `decision`). Keeping them
+# in the signature matters for the engine's typed call site.
+async def _merge(  # pylint: disable=unused-argument
     driver: AsyncDriver,
     database: str,
     *,

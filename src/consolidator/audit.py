@@ -10,7 +10,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def start_run(
+# Audit writer kwargs mirror the :ConsolidationRun / :DecisionLog node
+# shape; bundling them into a struct would just hide the columns.
+async def start_run(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
@@ -40,7 +42,9 @@ async def start_run(
     return run_id
 
 
-async def end_run(
+# See start_run() — six kwargs map 1:1 to the :ConsolidationRun columns
+# being patched at run end (rules_fired, decisions, outcome).
+async def end_run(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
@@ -66,7 +70,9 @@ async def end_run(
         )
 
 
-async def record_decision(
+# See start_run() — kwargs mirror :RuleApplication + :DecisionLog
+# columns one-for-one and are the audit-log public contract.
+async def record_decision(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,

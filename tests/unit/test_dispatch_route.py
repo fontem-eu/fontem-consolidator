@@ -8,8 +8,6 @@ Covers:
 """
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 
 def _payload(event_type: str, payload: dict, *, seq: int = 1, iri: str = "x") -> dict:
     return {

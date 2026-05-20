@@ -34,7 +34,12 @@ class ConsolidationResult:
     rules_fired: int
 
 
-async def consolidate(
+# The pipeline orchestrator legitimately walks every rule + applies
+# per-rule promotion/conflict gates + writes audit + emits metrics.
+# Splitting it makes the control flow harder to follow than keeping
+# it as one linear function; the kwargs map 1:1 to the public API
+# surface (consolidator dispatch route + trigger consumer).
+async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
     driver: AsyncDriver,
     database: str,
     *,
@@ -103,7 +108,8 @@ async def consolidate(
             continue
         try:
             applies = await rule.applies(entity)
-        except Exception as exc:  # pragma: no cover - defensive
+        # A buggy rule must not abort the whole pipeline — log + skip.
+        except Exception:  # pragma: no cover  # pylint: disable=broad-exception-caught
             logger.exception("rule {name} applies() raised", name=rule.name)
             continue
         if not applies:
@@ -150,7 +156,10 @@ async def consolidate(
                     target_id=decision.target_id,
                     confidence=decision.confidence,
                     entity_type=decision.entity_type,
-                    details={**decision.details, "auto_merged_above_threshold": rule.auto_merge_threshold},
+                    details={
+                        **decision.details,
+                        "auto_merged_above_threshold": rule.auto_merge_threshold,
+                    },
                 )
 
             # Stamp the rule's `force_auto_merge` opt-in into the
@@ -242,7 +251,10 @@ async def consolidate(
     )
 
 
-def _summarize(decisions: list[dict]) -> str:
+# Each branch maps one outcome to one summary label — flattening into
+# a dict would just hide the priority ordering (merge > link > conflict
+# > flag > enrich > noop) that this if-ladder makes explicit.
+def _summarize(decisions: list[dict]) -> str:  # pylint: disable=too-many-return-statements
     if not decisions:
         return "no_match"
     if any(d["outcome"] == "auto_merge" for d in decisions):

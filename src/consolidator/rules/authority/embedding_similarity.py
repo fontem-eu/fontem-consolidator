@@ -65,7 +65,11 @@ class EmbeddingCosineSameAuthority(Rule):
             return False
         return True
 
-    async def find_candidates(self, entity: Entity) -> list[Candidate]:
+    # Vector-index lookup + Cypher filter stack + Python-side
+    # Jaro-Winkler gate all pivot off the same per-call settings —
+    # the locals stay readable inline rather than spread across
+    # helper signatures.
+    async def find_candidates(self, entity: Entity) -> list[Candidate]:  # pylint: disable=too-many-locals
         # Imported lazily so unit tests that patch `get_driver` don't see
         # a module-level import resolving before their monkeypatch.
         from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel

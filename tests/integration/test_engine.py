@@ -349,7 +349,8 @@ async def test_authority_cross_country_flags_same_as(driver, monkeypatch):
     # SAME_AS edge with the new rule's method
     flag = await _count(
         driver,
-        "MATCH (:Authority {authority_id:'eeas-bel'})-[r:SAME_AS]-(:Authority {authority_id:'eeas-mus'}) "
+        "MATCH (:Authority {authority_id:'eeas-bel'})-[r:SAME_AS]-"
+        "(:Authority {authority_id:'eeas-mus'}) "
         "WHERE r.method = 'exact_name_any_country_authority' RETURN count(r)",
     )
     assert flag == 1

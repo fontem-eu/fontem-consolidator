@@ -15,6 +15,7 @@ Pipeline:
 
 import re
 
+from loguru import logger
 from rapidfuzz.distance import JaroWinkler
 
 from src.config import settings
@@ -100,9 +101,15 @@ class FuzzyNameSameCountry(Rule):
     async def applies(self, entity: Entity) -> bool:
         return bool(entity.properties.get("name")) and bool(entity.properties.get("country"))
 
-    async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+    # The retrieval / normalisation / scoring pipeline keeps every
+    # intermediate (sanitized, threshold, normalised pair, similarity)
+    # readable on one screen; splitting it would just push the locals
+    # behind helper boundaries.
+    async def find_candidates(self, entity: Entity) -> list[Candidate]:  # pylint: disable=too-many-locals
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         sanitized = _lucene_sanitize(entity.properties["name"])
         if not sanitized:
@@ -123,9 +130,9 @@ class FuzzyNameSameCountry(Rule):
                     country=entity.properties["country"],
                 )
                 records = [record async for record in result]
-            except Exception as exc:  # index may not exist in ephemeral test DBs
-                from loguru import logger
-
+            # Ephemeral test DBs may not have the company_name_ft fulltext
+            # index — log + treat as "no candidates" rather than aborting.
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("fuzzy_name: fulltext query failed: {}", exc)
                 return []
 

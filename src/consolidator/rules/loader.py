@@ -30,11 +30,14 @@ from src.consolidator.rules.gds.wcc_collapse import (
 from src.consolidator.rules.registry import register
 
 
-_loaded = False
+# Idempotency flag for the at-startup load — keeping it lowercase
+# matches the mutable-cache convention used elsewhere in the package
+# (eventlog._log_singleton, neo4j.client._driver).
+_loaded = False  # pylint: disable=invalid-name
 
 
 def load_all() -> None:
-    global _loaded
+    global _loaded  # pylint: disable=global-statement
     if _loaded:
         return
     _loaded = True

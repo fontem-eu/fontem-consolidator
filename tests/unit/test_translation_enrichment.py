@@ -1,14 +1,19 @@
 """TranslationEnrichmentAuthority — applies() gating, resolve() happy path, fail-soft."""
+# protected-access: tests reach into the rule's `_client` (the
+# linguistics client seam) and the loader's `_loaded` flag —
+# both are the private surfaces the enrichment contract pins.
+# import-outside-toplevel: registry / loader / clients are
+# imported inside test bodies so per-test patches activate
+# before module-import side effects.
+# pylint: disable=protected-access,import-outside-toplevel
 from __future__ import annotations
 
 import httpx
 import pytest
 
-from src.consolidator.clients import linguistics as ling_mod
 from src.consolidator.clients.linguistics import (
     EU_OFFICIAL_LANGS,
     LinguisticsClient,
-    LinguisticsUnavailable,
 )
 from src.consolidator.rules.authority.enrichment import (
     TranslationEnrichmentAuthority,
@@ -71,7 +76,10 @@ def test_infer_source_lang_defaults_to_en_for_unknown_country():
 # ── applies() gating ──────────────────────────────────────────────
 
 async def test_applies_skips_when_disabled(monkeypatch):
-    monkeypatch.setattr("src.consolidator.rules.authority.enrichment.settings.linguistics_enabled", False)
+    monkeypatch.setattr(
+        "src.consolidator.rules.authority.enrichment.settings.linguistics_enabled",
+        False,
+    )
     rule = TranslationEnrichmentAuthority()
     assert await rule.applies(_entity(name="X")) is False
 
@@ -94,7 +102,8 @@ async def test_applies_skips_when_complete():
 
 async def test_applies_true_when_missing_translation_or_embedding():
     rule = TranslationEnrichmentAuthority()
-    assert await rule.applies(_entity(name="X", name_lang="en")) is True     # no embedding, no translations
+    # no embedding, no translations
+    assert await rule.applies(_entity(name="X", name_lang="en")) is True
     assert await rule.applies(
         _entity(name="X", name_lang="en", name_embedding=[0.1])   # has embed, no translations
     ) is True

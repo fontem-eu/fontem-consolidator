@@ -4,6 +4,12 @@ Targets the pattern where EU-wide bodies (EEAS, JRC, eu-LISA) appear once
 per contracting-destination country as N duplicate authority nodes with
 the same name but different country values.
 """
+# protected-access: the loader's `_loaded` / registry `_REGISTRY`
+# are reset between tests so the per-test rule set is deterministic.
+# import-outside-toplevel: loader / registry imported inside the
+# registration test so the reset happens before module-import
+# side effects.
+# pylint: disable=protected-access,import-outside-toplevel
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +25,7 @@ def _fake_driver(records):
     class _Result:
         def __init__(self, recs):
             self._recs = recs
+            self._it = iter(recs)
 
         def __aiter__(self):
             self._it = iter(self._recs)
@@ -27,8 +34,8 @@ def _fake_driver(records):
         async def __anext__(self):
             try:
                 return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
 
     session.run = AsyncMock(return_value=_Result(records))
     ctx = MagicMock()

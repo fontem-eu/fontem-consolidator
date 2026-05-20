@@ -271,9 +271,9 @@ def test_resolve_result_default_candidates_is_empty_list():
     """Default factory must produce an empty list (not shared default)."""
     a = ResolveResult(hint="no_match")
     b = ResolveResult(hint="no_match")
-    assert a.candidates == []
+    assert not a.candidates
     a.candidates.append(
         ResolveMatch(gmr_id="x", name="x", country="DEU", lei=None,
                      tier="lei", confidence=1.0)
     )
-    assert b.candidates == [], "candidates must not be shared between instances"
+    assert not b.candidates, "candidates must not be shared between instances"

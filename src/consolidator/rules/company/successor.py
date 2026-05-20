@@ -45,8 +45,10 @@ class SuccessorLeiMatch(Rule):
         ) and active is True
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         async with driver.session() as session:
             # name_clean is materialised by the Neo4j sink at

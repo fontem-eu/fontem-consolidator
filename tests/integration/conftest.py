@@ -5,6 +5,19 @@ and yields the live AsyncDriver plus a DB-reset helper.
 
 Skip automatically if Docker is not available.
 """
+# protected-access: the fixture intentionally resets and re-seeds
+# `src.consolidator.neo4j.client._driver` + `rules.loader._loaded`
+# + `rules.registry._REGISTRY` between tests so module-level
+# caches don't leak across cases.
+# import-outside-toplevel: testcontainers / docker / app modules
+# are imported lazily inside fixtures so missing-dep skip paths
+# and per-test patches activate before module side effects.
+# redefined-outer-name: `neo4j_container` is a session fixture
+# consumed by the per-test `driver` fixture — pytest's intended
+# pattern.
+# broad-exception-caught: docker probe + bolt-readiness wait
+# legitimately swallow any startup error and back off.
+# pylint: disable=protected-access,import-outside-toplevel,redefined-outer-name,broad-exception-caught
 
 from __future__ import annotations
 
@@ -23,8 +36,8 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 def _docker_available() -> bool:
     try:
-        from testcontainers.neo4j import Neo4jContainer  # noqa: F401
         import docker  # noqa: F401
+        import testcontainers.neo4j  # noqa: F401  pylint: disable=unused-import
 
         client = docker.from_env()
         client.ping()

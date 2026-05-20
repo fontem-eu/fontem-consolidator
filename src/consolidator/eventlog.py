@@ -22,13 +22,16 @@ import uuid
 from loguru import logger
 
 _lock = threading.Lock()
-_log_singleton = None  # type: ignore[var-annotated]
+# Lazy singleton — naming kept lowercase because it's a mutable cache,
+# not a constant. pylint's invalid-name + global-statement complaints
+# don't add value for this well-understood double-checked-lock idiom.
+_log_singleton = None  # type: ignore[var-annotated]  # pylint: disable=invalid-name
 
 
 def _get_log():
     """Return the lazily-constructed fontem_events EventLog (or None
     if the env isn't configured)."""
-    global _log_singleton
+    global _log_singleton  # pylint: disable=global-statement
     if _log_singleton is not None:
         return _log_singleton
     with _lock:
@@ -39,8 +42,10 @@ def _get_log():
                 "eventlog: EVENTS_DATABASE_URL unset, emit will no-op"
             )
             return None
+        # Optional dep — imported lazily so unit tests / dev runs without
+        # the fontem-events wheel installed don't fail at import time.
         try:
-            from fontem_events import EventLog  # local import: optional dep
+            from fontem_events import EventLog  # pylint: disable=import-outside-toplevel
         except ImportError:  # pragma: no cover
             logger.warning(
                 "eventlog: gmr-events not installed, emit will no-op"
@@ -51,7 +56,9 @@ def _get_log():
         return _log_singleton
 
 
-def _emit_sync(
+# Five kwargs match the assert_same_as event envelope shape — splitting
+# them into a dict would just push the same fields one level deeper.
+def _emit_sync(  # pylint: disable=too-many-arguments
     *,
     event_type: str,
     iri: str,
@@ -72,7 +79,10 @@ def _emit_sync(
         )
 
 
-async def emit_assert_same_as(
+# Nine kwargs match the AssertSameAs event envelope; this is the public
+# surface for emitting "same as" relations from the consolidator and
+# packing them into a settings object would just add indirection.
+async def emit_assert_same_as(  # pylint: disable=too-many-arguments
     *,
     a_iri: str,
     b_iri: str,
@@ -93,8 +103,9 @@ async def emit_assert_same_as(
 
     Returns the event seq, or None if the emit was skipped or failed.
     """
+    # Optional dep — see _get_log() for the same lazy-import rationale.
     try:
-        from fontem_event_schemas.builders import assert_same_as
+        from fontem_event_schemas.builders import assert_same_as  # pylint: disable=import-outside-toplevel
     except ImportError:  # pragma: no cover
         logger.warning(
             "eventlog: gmr-event-schemas not installed, skipping emit"

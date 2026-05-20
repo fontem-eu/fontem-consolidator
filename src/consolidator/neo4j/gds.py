@@ -52,5 +52,7 @@ async def gds_available(driver: AsyncDriver, database: str) -> bool:
             result = await session.run("CALL gds.version()")
             record = await result.single()
             return record is not None
-    except Exception:
+    # Any driver/session/server error means GDS isn't usable — log nothing
+    # and return False so callers fall through to the no-GDS branch.
+    except Exception:  # pylint: disable=broad-exception-caught
         return False

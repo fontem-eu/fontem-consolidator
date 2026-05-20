@@ -20,6 +20,12 @@ These tests pin the new behaviour: every merge calls
 ``_refresh_trade_edges`` for the canonical, which drops and
 rebuilds CLIENT_OF / SUPPLIER_OF for the canonical's neighborhood.
 """
+# protected-access: tests pin the post-merge trade-edge rebuild
+# by calling actions._merge / ._refresh_trade_edges and reading
+# the _REFRESH_*_TRADE_EDGES cypher constants. Those are
+# package-internal by design and the cleanest place to lock
+# down the behaviour is the test that drives them.
+# pylint: disable=protected-access
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -109,7 +115,8 @@ async def test_merge_company_runs_trade_edge_refresh_inverted():
     )
     refresh = captured[-1]
     assert "MATCH (canonical:Company {gmr_id: $canonical_id})" in refresh["cypher"]
-    assert "MATCH (a:Authority)-[:AWARDED]->(ct:Contract)-[:AWARDED_TO]->(canonical)" in refresh["cypher"]
+    chain = "MATCH (a:Authority)-[:AWARDED]->(ct:Contract)-[:AWARDED_TO]->(canonical)"
+    assert chain in refresh["cypher"]
     assert "CREATE (a)-[:CLIENT_OF" in refresh["cypher"]
     assert "CREATE (canonical)-[:SUPPLIER_OF" in refresh["cypher"]
 

@@ -28,24 +28,30 @@ class _GdsNodeSimilarityBase(Rule):
     async def applies(self, entity: Entity) -> bool:
         return entity.entity_type == self.anchor_label
 
-    async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+    # GDS projection + Cypher query construction + result extraction all
+    # share the same neighborhood / id_key / anchor_label config, so the
+    # locals stay inline rather than getting spread across helpers.
+    async def find_candidates(self, entity: Entity) -> list[Candidate]:  # pylint: disable=too-many-locals
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         if not await gds_available(driver, "neo4j"):
             return []
 
         labels = "|".join(self.neighborhood_labels + (self.anchor_label,))
         rels = "|".join(self.neighborhood_rels) or "*"
+        all_labels = list(self.neighborhood_labels + (self.anchor_label,))
         node_q = f"""
             MATCH (n)
-            WHERE any(lbl IN labels(n) WHERE lbl IN {list(self.neighborhood_labels + (self.anchor_label,))})
+            WHERE any(lbl IN labels(n) WHERE lbl IN {all_labels})
             RETURN id(n) AS id, labels(n) AS labels, n.{self.id_key} AS entity_id
         """
         rel_q = f"""
             MATCH (a)-[r:{rels}]-(b)
-            WHERE any(lbl IN labels(a) WHERE lbl IN {list(self.neighborhood_labels + (self.anchor_label,))})
-              AND any(lbl IN labels(b) WHERE lbl IN {list(self.neighborhood_labels + (self.anchor_label,))})
+            WHERE any(lbl IN labels(a) WHERE lbl IN {all_labels})
+              AND any(lbl IN labels(b) WHERE lbl IN {all_labels})
             RETURN id(a) AS source, id(b) AS target
         """
 
@@ -84,9 +90,9 @@ class _GdsNodeSimilarityBase(Rule):
                         context={"jaccard": score},
                     )
                 )
-        except Exception:
-            # GDS projection might fail on a tiny/empty graph (integration tests);
-            # behave as noop rather than crash the pipeline.
+        # GDS projection might fail on a tiny/empty graph (integration tests);
+        # behave as noop rather than crash the pipeline.
+        except Exception:  # pylint: disable=broad-exception-caught
             return []
         _ = labels  # pyflakes
         return out

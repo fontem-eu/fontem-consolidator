@@ -35,7 +35,10 @@ async def test_gds_node_similarity_authority_applies_only_to_authority():
 async def test_gds_node_similarity_empty_when_gds_absent():
     rule = GdsNodeSimilarityCompany()
     with patch("src.consolidator.neo4j.client.get_driver", AsyncMock()), \
-         patch("src.consolidator.rules.gds.node_similarity.gds_available", AsyncMock(return_value=False)):
+         patch(
+             "src.consolidator.rules.gds.node_similarity.gds_available",
+             AsyncMock(return_value=False),
+         ):
         candidates = await rule.find_candidates(Entity("Company", "A", {}))
     assert candidates == []
 
@@ -55,7 +58,10 @@ async def test_gds_node_similarity_resolve_emits_flag():
 async def test_gds_wcc_collapse_empty_when_gds_absent():
     rule = GdsSameAsClusterCollapseCompany()
     with patch("src.consolidator.neo4j.client.get_driver", AsyncMock()), \
-         patch("src.consolidator.rules.gds.wcc_collapse.gds_available", AsyncMock(return_value=False)):
+         patch(
+             "src.consolidator.rules.gds.wcc_collapse.gds_available",
+             AsyncMock(return_value=False),
+         ):
         candidates = await rule.find_candidates(Entity("Company", "A", {}))
     assert candidates == []
 

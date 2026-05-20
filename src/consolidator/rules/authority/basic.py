@@ -23,7 +23,10 @@ def _normalise_authority(name: str) -> str:
 
 class ExactAuthorityIdMatch(Rule):
     name = "exact_authority_id_match"
-    description = "Two :Authority nodes share the same authority_id → merge (usually a no-op; unique constraint guards it)."
+    description = (
+        "Two :Authority nodes share the same authority_id → merge "
+        "(usually a no-op; unique constraint guards it)."
+    )
     entity_types = {"Authority"}
     confidence = 1.0
     action = "merge"
@@ -35,8 +38,10 @@ class ExactAuthorityIdMatch(Rule):
         return bool(entity.properties.get("authority_id"))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         async with driver.session() as session:
             result = await session.run(
@@ -80,8 +85,10 @@ class ExactNameCountryMatchAuthority(Rule):
         return bool(entity.properties.get("name")) and bool(entity.properties.get("country"))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         async with driver.session() as session:
             # apoc.text.clean strips whitespace + punctuation + lowercases so
@@ -153,8 +160,10 @@ class ExactNameAnyCountryAuthority(Rule):
         return bool(entity.properties.get("name"))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         async with driver.session() as session:
             # name_clean indexed on Authority — keeps this O(log N).
@@ -210,8 +219,10 @@ class FuzzyNameSameCountryAuthority(Rule):
         return bool(entity.properties.get("name")) and bool(entity.properties.get("country"))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver = await get_driver()
         sanitized = _LUCENE_SPECIAL.sub(" ", entity.properties["name"]).strip()
         if not sanitized:
@@ -230,7 +241,9 @@ class FuzzyNameSameCountryAuthority(Rule):
                     country=entity.properties["country"],
                 )
                 records = [record async for record in result]
-            except Exception:
+            # Ephemeral DBs may not have the fulltext index — treat as
+            # "no candidates" rather than aborting the rule.
+            except Exception:  # pylint: disable=broad-exception-caught
                 return []
 
         threshold = settings.fuzzy_name_threshold

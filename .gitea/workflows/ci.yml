@@ -30,7 +30,9 @@ jobs:
       - name: Unit tests
         run: python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
       - name: Lint
-        run: python3 -m pylint src tests --output-format=parseable --reports=no 2>&1 | tail -1 || true
+        # Hard gate — pylint must rate 10.00/10. Tool config (justified
+        # disables, pytest testpaths) lives in pyproject.toml.
+        run: python3 -m pylint src/consolidator tests
 
   build-deploy:
     needs: test

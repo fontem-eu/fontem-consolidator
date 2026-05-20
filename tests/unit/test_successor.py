@@ -1,4 +1,9 @@
 """Unit tests for SuccessorLeiMatch — Neo4j mocked."""
+# protected-access: the loader's `_loaded` / registry `_REGISTRY`
+# are reset between tests so the per-test rule set is deterministic.
+# import-outside-toplevel: loader / registry are imported inside
+# tests so the reset above happens before module-import side effects.
+# pylint: disable=protected-access,import-outside-toplevel
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +19,7 @@ def _fake_driver(records):
     class _Result:
         def __init__(self, recs):
             self._recs = recs
+            self._it = iter(recs)
 
         def __aiter__(self):
             self._it = iter(self._recs)
@@ -22,8 +28,8 @@ def _fake_driver(records):
         async def __anext__(self):
             try:
                 return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
 
     session.run = AsyncMock(return_value=_Result(records))
     ctx = MagicMock()
@@ -38,13 +44,17 @@ def _fake_driver(records):
 @pytest.mark.asyncio
 async def test_applies_only_when_entity_is_active_with_lei():
     rule = SuccessorLeiMatch()
-    assert await rule.applies(Entity("Company", "A", {"lei": "X", "name": "n", "country": "FR", "active": True})) is True
+    active = {"lei": "X", "name": "n", "country": "FR", "active": True}
+    inactive = {"lei": "X", "name": "n", "country": "FR", "active": False}
+    no_lei = {"name": "n", "country": "FR", "active": True}
+    no_name = {"lei": "X", "country": "FR", "active": True}
+    assert await rule.applies(Entity("Company", "A", active)) is True
     # inactive self → don't initiate
-    assert await rule.applies(Entity("Company", "A", {"lei": "X", "name": "n", "country": "FR", "active": False})) is False
+    assert await rule.applies(Entity("Company", "A", inactive)) is False
     # missing lei
-    assert await rule.applies(Entity("Company", "A", {"name": "n", "country": "FR", "active": True})) is False
+    assert await rule.applies(Entity("Company", "A", no_lei)) is False
     # missing name
-    assert await rule.applies(Entity("Company", "A", {"lei": "X", "country": "FR", "active": True})) is False
+    assert await rule.applies(Entity("Company", "A", no_name)) is False
 
 
 @pytest.mark.asyncio

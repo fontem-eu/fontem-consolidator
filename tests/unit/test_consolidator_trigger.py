@@ -8,6 +8,15 @@ Covers the cycle-prevention contract:
   - 409 from the dispatch is treated as success.
   - Other 4xx/5xx raise so the EventConsumer's batch retry handles it.
 """
+# import-outside-toplevel: ConsumerConfig / ConsolidatorTrigger /
+# threading helpers are imported inside the fixture or test bodies
+# so the env-var patches above and per-test monkeypatches activate
+# before the consumer's __init__ reaches for them.
+# redefined-outer-name: `trigger` is the pytest fixture name and
+# is passed positionally to each test by pytest's intended pattern.
+# unused-argument: handler stubs take `req` to match the httpx
+# transport signature even when they don't read it.
+# pylint: disable=import-outside-toplevel,redefined-outer-name,unused-argument
 from __future__ import annotations
 
 import os
@@ -103,7 +112,7 @@ def test_consolidator_outputs_skipped_no_loop(trigger):
         _client_factory(handler),
     ):
         trigger.handle(batch)
-    assert posted == [], (
+    assert not posted, (
         "trigger dispatched a consolidator-output event; loop is open"
     )
 

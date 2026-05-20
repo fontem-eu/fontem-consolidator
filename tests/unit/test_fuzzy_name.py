@@ -22,6 +22,7 @@ def _fake_driver(records):
     class _Result:
         def __init__(self, recs):
             self._recs = recs
+            self._it = iter(recs)
 
         def __aiter__(self):
             self._it = iter(self._recs)
@@ -30,8 +31,8 @@ def _fake_driver(records):
         async def __anext__(self):
             try:
                 return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
 
     session.run = AsyncMock(return_value=_Result(records))
     ctx = MagicMock()
@@ -59,7 +60,8 @@ def test_normalise_strips_ukrainian_llc_boilerplate():
     # Ukrainian LLC prefix — what matters is inside the quotes
     assert _normalise('ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "АНСУ"').strip().strip('"') == 'АНСУ'
     # Double space between words — still collapses
-    assert _normalise('ТОВАРИСТВО З ОБМЕЖЕНОЮ  ВІДПОВІДАЛЬНІСТЮ "ГЕТЬМАНСЬКЕ"').strip().strip('"') == 'ГЕТЬМАНСЬКЕ'
+    double_space = 'ТОВАРИСТВО З ОБМЕЖЕНОЮ  ВІДПОВІДАЛЬНІСТЮ "ГЕТЬМАНСЬКЕ"'
+    assert _normalise(double_space).strip().strip('"') == 'ГЕТЬМАНСЬКЕ'
 
 
 def test_normalise_strips_short_ukrainian_tov():
@@ -94,7 +96,8 @@ async def test_fuzzy_rejects_parent_subsidiary():
     """'SOCOTEC' vs 'SOCOTEC CONSTRUCTION' must NOT emit a flag (Jaro-Winkler < 0.92)."""
     rule = FuzzyNameSameCountry()
     entity = Entity("Company", "gmr-A", {"name": "SOCOTEC", "country": "FRA"})
-    rec = {"node": {"gmr_id": "gmr-B", "name": "SOCOTEC CONSTRUCTION", "country": "FRA"}, "score": 5.0}
+    other = {"gmr_id": "gmr-B", "name": "SOCOTEC CONSTRUCTION", "country": "FRA"}
+    rec = {"node": other, "score": 5.0}
     driver = _fake_driver([rec])
     with patch("src.consolidator.neo4j.client.get_driver", AsyncMock(return_value=driver)):
         out = await rule.find_candidates(entity)
@@ -118,7 +121,8 @@ async def test_fuzzy_accepts_near_identical_names():
     """'Acme Holdings SA' vs 'ACME Holdings S.A.' normalises to same tokens → 1.0."""
     rule = FuzzyNameSameCountry()
     entity = Entity("Company", "gmr-A", {"name": "Acme Holdings SA", "country": "FRA"})
-    rec = {"node": {"gmr_id": "gmr-B", "name": "ACME Holdings S.A.", "country": "FRA"}, "score": 8.0}
+    other = {"gmr_id": "gmr-B", "name": "ACME Holdings S.A.", "country": "FRA"}
+    rec = {"node": other, "score": 8.0}
     driver = _fake_driver([rec])
     with patch("src.consolidator.neo4j.client.get_driver", AsyncMock(return_value=driver)):
         out = await rule.find_candidates(entity)

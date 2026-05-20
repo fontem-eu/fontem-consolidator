@@ -15,6 +15,7 @@ def _fake_driver(records):
     class _Result:
         def __init__(self, recs):
             self._recs = recs
+            self._it = iter(recs)
 
         def __aiter__(self):
             self._it = iter(self._recs)
@@ -23,8 +24,8 @@ def _fake_driver(records):
         async def __anext__(self):
             try:
                 return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
 
     session.run = AsyncMock(return_value=_Result(records))
     ctx = MagicMock()

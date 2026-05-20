@@ -9,6 +9,7 @@ def _stub_session(run_results):
     class _Result:
         def __init__(self, recs):
             self._recs = recs
+            self._it = iter(recs)
 
         def __aiter__(self):
             self._it = iter(self._recs)
@@ -17,13 +18,13 @@ def _stub_session(run_results):
         async def __anext__(self):
             try:
                 return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
 
         async def single(self):
             return self._recs[0] if self._recs else None
 
-    async def run(*args, **kwargs):
+    async def run(*args, **kwargs):  # pylint: disable=unused-argument
         return _Result(run_results.pop(0))
 
     session.run = AsyncMock(side_effect=run)

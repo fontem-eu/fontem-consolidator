@@ -1,0 +1,31 @@
+# Pylint + pytest tool config for the consolidator service. This repo
+# is not packaged as a wheel (the Dockerfile copies src/ directly), so
+# there is no [build-system] / [project] block; pyproject.toml is here
+# solely as the canonical home for pylint + pytest config.
+#
+# Pylint disables — rationale for this repo:
+#   missing-{module,class,function}-docstring (C0114/5/6) — the
+#     consolidator surface is typed (Pydantic models, async engine
+#     entrypoints, rule helpers) and the symbol names are self-
+#     documenting; docstring stubs across ~30 rule modules + the
+#     engine + every test would just create lint-debt with no
+#     reader value.
+#   too-few-public-methods (R0903) — Rule subclasses + Pydantic
+#     payload models legitimately expose one method (or none, in
+#     the case of typed event envelopes).
+#   duplicate-code (R0801) — pylint's similarity detector flags the
+#     near-identical rule-loader boilerplate, the audit-patch stack
+#     repeated across engine tests, and the parallel
+#     authority/contract enrichment helpers, all of which are
+#     intrinsic to the rules-registry pattern.
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "duplicate-code",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

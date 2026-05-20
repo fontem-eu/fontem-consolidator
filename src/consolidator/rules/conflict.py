@@ -44,7 +44,10 @@ def find_conflict(entity: Entity, candidate: Candidate) -> tuple[str, object, ob
     return None
 
 
-def conflict_decision(
+# Six kwargs mirror the conflict-flag :Decision shape (rule, source,
+# candidate, score, conflict tuple, optional matched_property).
+# Bundling them would just push the same columns into a struct.
+def conflict_decision(  # pylint: disable=too-many-arguments
     *,
     rule_name: str,
     entity: Entity,

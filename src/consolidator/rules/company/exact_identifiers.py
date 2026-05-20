@@ -1,5 +1,6 @@
-"""Hard-identifier Company rules — LEI, CIK, VAT. All auto-merge when the same id appears on two nodes,
-UNLESS another hard identifier disagrees — then flag-with-conflict instead."""
+"""Hard-identifier Company rules — LEI, CIK, VAT. All auto-merge when the
+same id appears on two nodes, UNLESS another hard identifier disagrees —
+then flag-with-conflict instead."""
 
 from neo4j import AsyncDriver
 
@@ -27,8 +28,10 @@ class _ExactIdRule(Rule):
         return bool(entity.properties.get(self.id_property))
 
     async def find_candidates(self, entity: Entity) -> list[Candidate]:
-        from src.consolidator.neo4j.client import get_driver
-
+        # Imported lazily so unit tests patching the module-level
+        # `get_driver` see the patched callable rather than a name
+        # already bound at import time.
+        from src.consolidator.neo4j.client import get_driver  # pylint: disable=import-outside-toplevel
         driver: AsyncDriver = await get_driver()
         value = entity.properties[self.id_property]
         async with driver.session() as session:
