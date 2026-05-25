@@ -21,6 +21,13 @@ INDEX_CYPHER = [
         "FOR (r:ConsolidationRun) "
         "ON (r.entity_type, r.entity_id, r.started_at)"
     ),
+    # gmr_id: primary lookup key for every Company MERGE that the
+    # neo4j-sink performs (per-event path: one MERGE per UpsertEntity).
+    # Without this index a 3.3M-row Company graph turns each MERGE into
+    # a ~237k-DbHits label scan; the GLEIF replay collapsed to ~10/s.
+    # With the index, MERGE is a sub-ms index seek and the same replay
+    # runs at the sink's batch-write ceiling.
+    "CREATE INDEX company_gmr_id IF NOT EXISTS FOR (c:Company) ON (c.gmr_id)",
     # historic_leis: retired/lapsed LEIs that previously identified this entity.
     # Index lets us look up a company from any of its past LEIs when
     # ETL writes come in referencing an old identifier.
