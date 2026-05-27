@@ -28,6 +28,14 @@ INDEX_CYPHER = [
     # With the index, MERGE is a sub-ms index seek and the same replay
     # runs at the sink's batch-write ceiling.
     "CREATE INDEX company_gmr_id IF NOT EXISTS FOR (c:Company) ON (c.gmr_id)",
+    # ted_notice_id: same problem as company_gmr_id but for Contract.
+    # Every UpsertContract event from the TED loader MERGEs by
+    # ted_notice_id. With ~100k Contract nodes per monthly TED package
+    # the second-month run drops to ~20/s without this index because
+    # each MERGE becomes a label scan that grows with the existing
+    # Contract count. Added live in both staging + prod Neo4j on
+    # 2026-05-27; this migration ensures fresh deploys carry it.
+    "CREATE INDEX contract_ted_notice_id IF NOT EXISTS FOR (c:Contract) ON (c.ted_notice_id)",
     # historic_leis: retired/lapsed LEIs that previously identified this entity.
     # Index lets us look up a company from any of its past LEIs when
     # ETL writes come in referencing an old identifier.
