@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 COPY void42-ca.crt /usr/local/share/ca-certificates/void42-ca.crt
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
