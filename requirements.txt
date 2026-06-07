@@ -1,4 +1,4 @@
-fastapi==0.136.1
+fastapi==0.136.3
 # Explicit starlette pin overrides fastapi's transitive `>=0.46.0` —
 # 0.46.x had CVE-2025-54121 (multipart DoS) and 0.48.x had
 # CVE-2025-62727 (header parsing). 0.49.1 is the first version that
