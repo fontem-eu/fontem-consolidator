@@ -110,23 +110,27 @@ async def test_name_country_match_detects_lei_conflict():
 
 
 @pytest.mark.asyncio
-async def test_name_country_match_merges_when_both_leis_malformed():
+async def test_name_country_match_flags_when_both_leis_malformed():
     """If both 'LEIs' are malformed (non-canonical), they're effectively unknown —
-    no conflict, merge proceeds."""
+    no conflict, but name+country still only FLAGs for review (never auto-merges:
+    ~0.27% false-merge floor on name alone)."""
     rule = ExactNameCountryMatch()
     entity = Entity("Company", "gmr-A", {"name": "Acme", "country": "FR", "lei": "LEI-A"})
     candidate_rec = {"c": {"gmr_id": "gmr-B", "name": "Acme", "country": "FR", "lei": "LEI-B"}}
     candidates = await _run_find(rule, entity, [candidate_rec])
     decision = await rule.resolve(entity, candidates[0])
-    assert decision.action == "merge"
+    assert decision.action == "flag"
+    assert not decision.details.get("conflict")
 
 
 @pytest.mark.asyncio
-async def test_name_country_match_merges_without_conflict():
+async def test_name_country_match_flags_without_conflict():
+    """A clean name+country match is a plain review flag — never an auto-merge."""
     rule = ExactNameCountryMatch()
     entity = Entity("Company", "gmr-A", {"name": "Acme Holdings", "country": "FR"})
     candidate_rec = {"c": {"gmr_id": "gmr-B", "name": "Acme Holdings", "country": "FR"}}
     candidates = await _run_find(rule, entity, [candidate_rec])
     decision = await rule.resolve(entity, candidates[0])
-    assert decision.action == "merge"
+    assert decision.action == "flag"
     assert decision.confidence == 0.95
+    assert decision.details.get("name_country_review") is True
