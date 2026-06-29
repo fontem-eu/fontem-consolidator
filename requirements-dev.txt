@@ -2,5 +2,5 @@
 pytest==9.1.0
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
-pylint==4.0.5
+pylint==4.0.6
 testcontainers[neo4j]==4.14.2
