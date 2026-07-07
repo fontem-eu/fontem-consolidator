@@ -27,6 +27,9 @@ class ResolveRequest(BaseModel):
     lei: str | None = None
     vat: str | None = None
     cik: str | None = None
+    # National business-register ID (GLEIF RegistrationAuthorityEntityID).
+    # Only resolved together with country. Forward-prep.
+    registered_as: str | None = None
 
 
 class ResolveMatchOut(BaseModel):
@@ -36,7 +39,9 @@ class ResolveMatchOut(BaseModel):
     name: str
     country: str | None
     lei: str | None
-    tier: Literal["lei", "vat", "cik", "name_country", "fuzzy"]
+    tier: Literal[
+        "lei", "vat", "cik", "registered_as", "name_country", "fuzzy",
+    ]
     confidence: float
 
 
@@ -65,10 +70,11 @@ async def resolve_endpoint(req: ResolveRequest) -> ResolveResponse:
 
     See `src.consolidator.resolver` for the tiered logic. ETLs replace
     their inline match cypher with one POST to this endpoint."""
-    if not any([req.lei, req.vat, req.cik, req.name]):
+    if not any([req.lei, req.vat, req.cik, req.registered_as, req.name]):
         raise HTTPException(
             status_code=400,
-            detail="at least one of lei/vat/cik/name must be provided",
+            detail=("at least one of lei/vat/cik/registered_as/name "
+                    "must be provided"),
         )
     driver = await get_driver()
     result = await resolver.resolve(
@@ -80,6 +86,7 @@ async def resolve_endpoint(req: ResolveRequest) -> ResolveResponse:
         lei=req.lei,
         vat=req.vat,
         cik=req.cik,
+        registered_as=req.registered_as,
     )
     return _to_response(result)
 
@@ -112,6 +119,7 @@ class BatchResolveRow(BaseModel):
     lei: str | None = None
     vat: str | None = None
     cik: str | None = None
+    registered_as: str | None = None
 
 
 class BatchResolveResponse(BaseModel):
@@ -141,7 +149,8 @@ async def resolve_batch(req: BatchResolveRequest) -> BatchResolveResponse:
     driver = await get_driver()
     out: list[ResolveResponse] = []
     for row in req.rows:
-        if not any([row.lei, row.vat, row.cik, row.name]):
+        if not any([row.lei, row.vat, row.cik,
+                    row.registered_as, row.name]):
             out.append(ResolveResponse(hint="no_match"))
             continue
         result = await resolver.resolve(
@@ -153,6 +162,7 @@ async def resolve_batch(req: BatchResolveRequest) -> BatchResolveResponse:
             lei=row.lei,
             vat=row.vat,
             cik=row.cik,
+            registered_as=row.registered_as,
         )
         out.append(_to_response(result))
     return BatchResolveResponse(results=out)

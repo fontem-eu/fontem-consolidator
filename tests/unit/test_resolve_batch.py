@@ -119,3 +119,50 @@ def test_batch_entity_type_required(client):
         json={"rows": [{"name": "X", "country": "DE"}]},
     )
     assert r.status_code == 422
+
+
+# ── registered_as forward-prep on the /resolve route ────────────────
+
+
+def test_single_resolve_threads_registered_as(client):
+    """The single /resolve endpoint accepts registered_as and forwards
+    it to the resolver (country-scoped national ID; forward-prep)."""
+    captured = {}
+
+    async def _fake(*_args, **kwargs):
+        from src.consolidator.resolver import ResolveResult  # pylint: disable=import-outside-toplevel
+        captured.update(kwargs)
+        return ResolveResult(hint="no_match", normalised_country="DNK")
+
+    with patch("src.consolidator.resolver.resolve", side_effect=_fake), \
+         patch("src.api.routes.resolve.get_driver",
+               new=AsyncMock(return_value=None)):
+        r = client.post("/resolve", json={
+            "entity_type": "Company",
+            "registered_as": "61056416", "country": "DK",
+        })
+    assert r.status_code == 200
+    assert captured["registered_as"] == "61056416"
+
+
+def test_single_resolve_registered_as_alone_is_accepted(client):
+    """registered_as satisfies the 'at least one attribute' guard — a
+    registered_as+country request is not a 400."""
+    async def _fake(*_args, **_kwargs):
+        from src.consolidator.resolver import ResolveResult  # pylint: disable=import-outside-toplevel
+        return ResolveResult(hint="no_match", normalised_country="DNK")
+
+    with patch("src.consolidator.resolver.resolve", side_effect=_fake), \
+         patch("src.api.routes.resolve.get_driver",
+               new=AsyncMock(return_value=None)):
+        r = client.post("/resolve", json={
+            "entity_type": "Company", "registered_as": "61056416",
+            "country": "DK",
+        })
+    assert r.status_code == 200
+
+
+def test_single_resolve_empty_request_still_400(client):
+    """A bag with no usable attribute at all is still rejected."""
+    r = client.post("/resolve", json={"entity_type": "Company"})
+    assert r.status_code == 400

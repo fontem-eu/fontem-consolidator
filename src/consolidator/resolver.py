@@ -110,7 +110,9 @@ def normalize_country(raw: str | None) -> str | None:
 # Result shape
 # ─────────────────────────────────────────────────────────────────────
 
-ResolveTier = Literal["lei", "vat", "cik", "name_country", "fuzzy"]
+ResolveTier = Literal[
+    "lei", "vat", "cik", "registered_as", "name_country", "fuzzy",
+]
 ResolveHint = Literal["matched", "ambiguous", "no_match"]
 
 
@@ -158,6 +160,16 @@ _BY_VAT = (
 
 _BY_CIK = (
     "MATCH (c:Company {cik: $cik}) "
+    "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
+    "       c.lei AS lei LIMIT 2"
+)
+
+# National business-register ID (GLEIF RegistrationAuthorityEntityID),
+# always country-scoped: the registry number is unique only within its
+# jurisdiction, so a bare match would collide across countries. Forward-
+# prep — the TED matcher does not yet forward national IDs.
+_BY_REGISTERED_AS = (
+    "MATCH (c:Company {registered_as: $registered_as, country: $country}) "
     "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
     "       c.lei AS lei LIMIT 2"
 )
@@ -233,6 +245,7 @@ async def resolve(  # pylint: disable=too-many-arguments,too-many-locals,too-man
     lei: str | None = None,
     vat: str | None = None,
     cik: str | None = None,
+    registered_as: str | None = None,
 ) -> ResolveResult:
     """Find the entity that matches the given attributes.
 
@@ -268,6 +281,23 @@ async def resolve(  # pylint: disable=too-many-arguments,too-many-locals,too-man
             if canonical_cik is not None:
                 rows = await _run_match(session, _BY_CIK, cik=canonical_cik)
                 hit = _resolve_rows(rows, "cik", 0.99)
+                if hit is not None:
+                    hit.normalised_country = iso_country
+                    return hit
+
+            # Tier 2c: national business-register ID, country-scoped.
+            # Unlike VAT (country-prefixed) and CIK (US-global), the
+            # registry number is unique only within its jurisdiction, so
+            # it is matched only when an agreeing country is supplied —
+            # no country, no tier. Confidence 0.98: a hard ID, one notch
+            # below VAT/CIK for its jurisdiction-scoped namespace.
+            canonical_reg = (registered_as or "").strip() or None
+            if canonical_reg is not None and iso_country is not None:
+                rows = await _run_match(
+                    session, _BY_REGISTERED_AS,
+                    registered_as=canonical_reg, country=iso_country,
+                )
+                hit = _resolve_rows(rows, "registered_as", 0.98)
                 if hit is not None:
                     hit.normalised_country = iso_country
                     return hit

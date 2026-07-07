@@ -158,6 +158,52 @@ async def test_vat_used_when_lei_absent():
 
 
 @pytest.mark.asyncio
+async def test_registered_as_used_when_country_present():
+    """A national business-register ID + country resolves at the
+    registered_as tier (confidence 0.98), below LEI/VAT/CIK."""
+    session = _mk_session(
+        {"MATCH (c:Company {registered_as:": [_row(gmr_id="reg-hit")]})
+    result = await resolver.resolve(
+        _mk_driver(session), "neo4j",
+        entity_type="Company", registered_as="61056416", country="DK",
+    )
+    assert result.hint == "matched"
+    assert result.match.tier == "registered_as"
+    assert result.match.gmr_id == "reg-hit"
+    assert result.match.confidence == 0.98
+
+
+@pytest.mark.asyncio
+async def test_registered_as_skipped_without_country():
+    """No country -> the tier is skipped entirely: the registry number
+    is only unique within its jurisdiction, so a bare match would risk a
+    cross-border collision. Falls through to no_match here."""
+    session = _mk_session(
+        {"MATCH (c:Company {registered_as:": [_row(gmr_id="reg-hit")]})
+    result = await resolver.resolve(
+        _mk_driver(session), "neo4j",
+        entity_type="Company", registered_as="61056416",
+    )
+    assert result.hint == "no_match"
+
+
+@pytest.mark.asyncio
+async def test_registered_as_yields_to_hard_ids():
+    """LEI/VAT/CIK outrank registered_as — when a VAT also hits, the VAT
+    tier returns first."""
+    session = _mk_session({
+        "MATCH (c:Company {vat:": [_row(gmr_id="vat-hit")],
+        "MATCH (c:Company {registered_as:": [_row(gmr_id="reg-hit")],
+    })
+    result = await resolver.resolve(
+        _mk_driver(session), "neo4j",
+        entity_type="Company", vat="DE123456789",
+        registered_as="61056416", country="DE",
+    )
+    assert result.match.tier == "vat"
+
+
+@pytest.mark.asyncio
 async def test_no_match_when_no_attrs_workable():
     session = _mk_session({})
     result = await resolver.resolve(

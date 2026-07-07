@@ -50,6 +50,13 @@ INDEX_CYPHER = [
     # the resolver query becomes a sub-100ms index lookup.
     "CREATE INDEX company_name_clean IF NOT EXISTS FOR (c:Company) ON (c.name_clean)",
     "CREATE INDEX authority_name_clean IF NOT EXISTS FOR (a:Authority) ON (a.name_clean)",
+    # registered_as + country: the national business-register ID
+    # (GLEIF RegistrationAuthorityEntityID), matched only alongside an
+    # agreeing country because the number is unique per jurisdiction,
+    # not globally. Composite so the resolver's registered_as hard tier
+    # is an index seek, not a Company label scan.
+    "CREATE INDEX company_registered_as_country IF NOT EXISTS "
+    "FOR (c:Company) ON (c.registered_as, c.country)",
     # Vector index on Authority name_embedding (LaBSE, 768-d, cosine).
     # Powers the embedding_cosine_authority rule's k-NN lookup; without
     # it the rule would fall back to a full 61k × 768 dot-product scan
