@@ -10,4 +10,4 @@ CI auto-deploys to the testing env on every merge to main. Promotion to staging 
 
 See [/config/repos/CLAUDE.md](https://contribute.void42.internal/fontem/gitops) for workspace-wide rules (feature branches + CI gate, no direct push to main, full gate before declaring done, conventional commits).
 
-<!-- rebuild-trigger: cosign v3 validation 2026-07-12T22:23:53Z -->
+<!-- rebuild-trigger: osv-scanner v2 validation -->
