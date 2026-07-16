@@ -13,7 +13,7 @@ jobs:
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
           PIP_TRUSTED_HOST: nexus.void42.internal
-          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+          CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
           pip install --no-cache-dir -r requirements-dev.txt
           # Internal-only deps: gmr-event-schemas + gmr-events live
@@ -21,10 +21,10 @@ jobs:
           # event-log trigger / dispatch route depend on these.
           tmpdir=$(mktemp -d)
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
               "$tmpdir/gmr-event-schemas"
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
               "$tmpdir/gmr-events"
           pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
       - name: Unit tests
@@ -43,28 +43,28 @@ jobs:
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
           PIP_TRUSTED_HOST: nexus.void42.internal
-          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+          CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
           # Mirror the install steps from the `test` job: dev deps
           # (which include pytest-cov) plus the two internal-only
-          # packages cloned from Gitea with GMR_CI_READ_TOKEN, then
+          # packages cloned from Gitea with CI_READ_TOKEN, then
           # run pytest with coverage so the Sonar scan has data.
           pip install --no-cache-dir -r requirements-dev.txt
           tmpdir=$(mktemp -d)
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
               "$tmpdir/gmr-event-schemas"
           git clone --depth 1 \
-              "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
               "$tmpdir/gmr-events"
           pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
           python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml || true
       - uses: actions/checkout@v4
         with:
-          repository: void42/fontem-ci
-          path: .fontem-ci
-          token: ${{ secrets.GMR_CI_READ_TOKEN }}
-      - uses: ./.fontem-ci/actions/sonar-scan
+          repository: void42/ci-actions
+          path: .ci-actions
+          token: ${{ secrets.CI_READ_TOKEN }}
+      - uses: ./.ci-actions/actions/sonar-scan
         with:
           sonar-token: ${{ secrets.SONAR_TOKEN }}
 
@@ -79,15 +79,15 @@ jobs:
       - name: Vendor internal Python deps for docker build
         # The Dockerfile pip-installs vendor/gmr-event-schemas + vendor/gmr-events.
         # pip's isolated-build env can't reach Gitea; we clone here at CI time
-        # with GMR_CI_READ_TOKEN, then docker build copies them in.
+        # with CI_READ_TOKEN, then docker build copies them in.
         env:
-          GMR_CI_READ_TOKEN: ${{ secrets.GMR_CI_READ_TOKEN }}
+          CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
           mkdir -p vendor
           for repo in gmr-event-schemas gmr-events; do
               rm -rf "vendor/$repo"
               git clone --depth 1 \
-                  "http://lucid:${GMR_CI_READ_TOKEN}@contribute.void42.internal/fontem/${repo}.git" \
+                  "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/${repo}.git" \
                   "vendor/$repo"
               rm -rf "vendor/$repo/.git"
           done

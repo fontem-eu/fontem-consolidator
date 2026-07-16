@@ -1,6 +1,9 @@
 """Tests for EmbeddingCosineSameAuthority — applies() gating, vector-
-index query shape, Decision mapping, registered-in-loader, encoder
-allowlist.
+index query shape, Decision mapping, registered-in-loader.
+
+Homogeneity is enforced Cypher-side (WHERE node.name_embedding_encoder
+= $enc). There is no app-level allowlist; the rule accepts any
+encoder-id the linguistics service returns.
 """
 # protected-access: the loader's `_loaded` / registry `_REGISTRY`
 # are reset between tests so the per-test rule set is deterministic.
@@ -42,13 +45,18 @@ def _authority(**props) -> Entity:
 
 # ── applies() ─────────────────────────────────────────────────────────
 
-async def test_applies_true_when_embedding_and_accepted_encoder(monkeypatch):
+async def test_applies_true_when_embedding_present(monkeypatch):
+    """Any encoder-id + vector is accepted. Cypher enforces homogeneity."""
     monkeypatch.setattr(_settings, "embedding_cosine_enabled", True)
-    monkeypatch.setattr(
-        _settings, "embedding_cosine_accepted_encoders", ENC,
-    )
     rule = EmbeddingCosineSameAuthority()
+    # Default entity uses labse@1.0.0-...
     assert await rule.applies(_authority()) is True
+    # A Mistral encoder-id is equally acceptable now.
+    e = _authority(name_embedding_encoder="mistral-embed@api-mistral-embed-2312")
+    assert await rule.applies(e) is True
+    # As is MiniLM, or any future encoder.
+    e = _authority(name_embedding_encoder="minilm@1.0.0-abcdef0")
+    assert await rule.applies(e) is True
 
 
 async def test_applies_false_when_feature_disabled(monkeypatch):
@@ -65,24 +73,13 @@ async def test_applies_false_when_no_embedding(monkeypatch):
     assert await rule.applies(e) is False
 
 
-async def test_applies_false_when_encoder_not_accepted(monkeypatch):
+async def test_applies_false_when_encoder_id_missing(monkeypatch):
+    """A vector without an encoder-id can't be safely compared —
+    we have no way to know what other rows are homogeneous with it."""
     monkeypatch.setattr(_settings, "embedding_cosine_enabled", True)
-    monkeypatch.setattr(
-        _settings, "embedding_cosine_accepted_encoders", "labse@2.0.0-xxxxxxx",
-    )
     rule = EmbeddingCosineSameAuthority()
-    # Current encoder is labse@1.0.0-... — not on the allowlist
-    assert await rule.applies(_authority()) is False
-
-
-async def test_applies_false_for_un_versioned_legacy_embedding(monkeypatch):
-    """Rows from before the versioning migration must abstain."""
-    monkeypatch.setattr(_settings, "embedding_cosine_enabled", True)
-    monkeypatch.setattr(
-        _settings, "embedding_cosine_accepted_encoders", ENC,
-    )
-    rule = EmbeddingCosineSameAuthority()
-    e = _authority(name_embedding_encoder="mistral-embed@legacy-pre-versioning")
+    e = _authority()
+    e.properties.pop("name_embedding_encoder")
     assert await rule.applies(e) is False
 
 

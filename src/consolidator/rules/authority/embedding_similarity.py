@@ -1,21 +1,32 @@
 """EmbeddingCosineSameAuthority — flag same-entity-in-different-language pairs.
 
-Uses the LaBSE name_embedding stored on every :Authority (768-d, cosine)
-to find cross-lingual and cross-country duplicates that the string-based
-rules miss (e.g. ``Ministero della Difesa`` ↔ ``Ministry of Defence``).
+Uses the name_embedding stored on every :Authority (cosine over whatever
+multilingual encoder the linguistics service produced — Mistral,
+LaBSE, MiniLM) to find cross-lingual / cross-country duplicates that the
+string-based rules miss (e.g. ``Ministero della Difesa`` ↔ ``Ministry of
+Defence``).
 
 Never auto-merges. Always flags for review via the standard
 ``_flag_same_as`` executor — human decides because embedding cosine is
 semantic, not deterministic.
 
 Safety invariants:
-- Skips entities whose encoder_id isn't on an allowlist (cross-encoder
-  comparisons are meaningless, so un-versioned or foreign vectors are
-  ignored).
+- **Homogeneity is enforced query-side**: the Cypher WHERE gate
+  ``node.name_embedding_encoder = $enc`` guarantees every compared pair
+  shares the same encoder. Cross-encoder cosines are meaningless (different
+  vector spaces), and this DB-side filter is the guard. There is no
+  app-level allowlist; any encoder produced by the linguistics service
+  is legitimate for comparison against its own siblings.
 - Filters out pairs already reviewed by a human (``reviewed=true`` on
   the existing :SAME_AS edge).
 - Uses Neo4j's native vector index for O(log n) k-NN lookup; without
-  the index this rule would run a full 61k × 768 dot product per entity.
+  the index this rule would run a full 61k × <dim> dot product per entity.
+
+Calibration note:
+The auto_merge_threshold below (0.98) was calibrated on a 500-authority
+LaBSE canary. Different encoders have different cosine distributions;
+if enrichment starts producing embeddings under a new encoder_id you
+should re-canary before trusting the auto_merge tier on those pairs.
 """
 from __future__ import annotations
 
@@ -26,19 +37,15 @@ from src.config import settings
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 
-def _accepted_encoders() -> frozenset[str]:
-    raw = settings.embedding_cosine_accepted_encoders or ""
-    return frozenset(e.strip() for e in raw.split(",") if e.strip())
-
-
 class EmbeddingCosineSameAuthority(Rule):
     name = "embedding_cosine_authority"
     description = (
-        "Flag :Authority pairs whose LaBSE name embeddings are cosine-"
-        "similar above threshold. Targets cross-lingual / cross-country "
-        "duplicates (same entity named in different languages) that "
-        "string-similarity rules miss. Never auto-merges — writes "
-        ":SAME_AS {reviewed:false} for human decision."
+        "Flag :Authority pairs whose name embeddings are cosine-similar "
+        "above threshold. Targets cross-lingual / cross-country duplicates "
+        "(same entity named in different languages) that string-similarity "
+        "rules miss. Never auto-merges — writes :SAME_AS {reviewed:false} "
+        "for human decision. Compares pairs only within the same encoder "
+        "family (Cypher-enforced), so mixing encoders in the graph is safe."
     )
     entity_types = {"Authority"}
     # Sits between ExactNameAnyCountryAuthority (0.90) and the GDS rules
@@ -59,9 +66,16 @@ class EmbeddingCosineSameAuthority(Rule):
             return False
         vec = entity.properties.get("name_embedding")
         enc = entity.properties.get("name_embedding_encoder")
+        # Require the entity to carry both a vector and an encoder-id, but
+        # don't gate on which encoder it is — the Cypher WHERE clause in
+        # find_candidates() enforces "same encoder on both sides", which
+        # is the property that makes the cosine meaningful. Refusing here
+        # on a non-allowlisted encoder is what silently broke the rule
+        # for 52 days when the linguistics service was returning
+        # mistral-embed encoder-ids and this gate insisted on LaBSE.
         if not isinstance(vec, list) or not vec:
             return False
-        if not isinstance(enc, str) or enc not in _accepted_encoders():
+        if not isinstance(enc, str) or not enc:
             return False
         return True
 

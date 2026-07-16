@@ -44,10 +44,18 @@ class Settings(BaseSettings):
     embedding_cosine_top_k: int = 3
     embedding_cosine_jaro_winkler_min: float = 0.45
     embedding_cosine_cross_country_only: bool = True
-    # Comma-separated list of encoder-ids whose vectors are safe to
-    # compare. Cross-encoder cosines are meaningless; this is the guard.
-    # If a row's encoder_id isn't in this list the rule abstains.
-    embedding_cosine_accepted_encoders: str = "labse@1.0.0-836121a"
+    # Homogeneity is enforced query-side: the Cypher WHERE gate on
+    # node.name_embedding_encoder = $enc guarantees every compared pair
+    # shares the same encoder. We no longer maintain an app-level
+    # allowlist — any encoder present in the graph is legitimate for its
+    # own siblings, and adding a new encoder (Mistral, MiniLM, ...) no
+    # longer needs a config-and-redeploy dance.
+    #
+    # DEPRECATED — retained for backward-compat only, ignored by the rule.
+    # (Was: 'labse@1.0.0-836121a'. When we ran on that whitelist while the
+    # linguistics service was actually returning mistral-embed encoder-ids,
+    # the rule silently abstained on every Authority for 52 days.)
+    embedding_cosine_accepted_encoders: str = ""
 
 
 settings = Settings()
