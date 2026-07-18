@@ -1,10 +1,22 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Embedding dimensionality per linguistics backend — mirrors the
+# fontem-linguistics catalog (src/domain/catalog.py). Used to keep the
+# configured default backend consistent with the Neo4j vector index
+# dims (see src/consolidator/neo4j/migrations.py); a backend whose dim
+# differs from the index produces vectors the index silently refuses
+# to hold, which kills embedding-cosine matching end to end.
+EMBEDDING_BACKEND_DIMS: dict[str, int] = {
+    "labse-local": 768,
+    "minilm-local": 384,
+    "mistral-embed": 1024,
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CONSOLIDATOR_", extra="ignore")
 
-    neo4j_uri: str = "bolt://neo4j.gmr.svc.cluster.local:7687"
+    neo4j_uri: str = "bolt://neo4j.fontem-prod.svc.cluster.local:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
     neo4j_database: str = "neo4j"
@@ -19,13 +31,24 @@ class Settings(BaseSettings):
     gds_similarity_threshold: float = 0.7
     gds_top_k: int = 5
 
-    # gmr-linguistics — translation + embedding service. Deployed only in
-    # prod (singleton); non-prod consolidators point at the same URL.
+    # fontem-linguistics — translation + embedding service. Deployed as a
+    # singleton in the linguistics-service namespace; every environment
+    # (including prod) points at the same URL.
     linguistics_url: str = "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080"
     linguistics_enabled: bool = True
     linguistics_timeout_s: float = 60.0
     linguistics_translation_backend: str = "mistral"
-    linguistics_embedding_backend: str = "mistral-embed"
+    # Default embedding backend MUST form a working pipeline with the
+    # authority_name_embedding_idx vector index (768-d, migrations.py):
+    # labse-local is 768-d, so enrichment writes vectors the index can
+    # hold and embedding_cosine_authority can compare. mistral-embed
+    # (1024-d) stays available via CONSOLIDATOR_LINGUISTICS_EMBEDDING_BACKEND,
+    # but switching requires a matching-dim vector index — 1024-d vectors
+    # are silently NOT indexed by a 768-d index, which is exactly how the
+    # embedding-similarity feature shipped dead-on-arrival (zero
+    # authorities enriched in prod). See EMBEDDING_BACKEND_DIMS above and
+    # tests/unit/test_config.py which pins this consistency.
+    linguistics_embedding_backend: str = "labse-local"
 
     # embedding_cosine_authority rule — flags Authority duplicates whose
     # LaBSE name-embedding cosine is above threshold. Never auto-merges.

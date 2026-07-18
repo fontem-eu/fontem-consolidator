@@ -266,3 +266,107 @@ async def test_rule_registered_first_among_authority():
     assert names.index("translation_enrichment_authority") < names.index(
         "exact_authority_id_match"
     )
+
+
+# ── configured backend + dim-consistent vectors ───────────────────
+
+async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
+    """The /embed request must carry settings.linguistics_embedding_backend.
+
+    This is the wire-level half of the pipeline-consistency pin in
+    tests/unit/test_config.py: the rule asks linguistics for the
+    backend the config names, and that backend's dim matches the
+    authority_name_embedding_idx vector index.
+    """
+    import json
+
+    from src.config import EMBEDDING_BACKEND_DIMS, settings
+    from src.consolidator.neo4j.migrations import AUTHORITY_NAME_EMBEDDING_DIMS
+
+    seen: dict[str, dict] = {}
+    default_backend = settings.linguistics_embedding_backend
+    dim = EMBEDDING_BACKEND_DIMS[default_backend]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        payload = json.loads(req.content)
+        if req.url.path.endswith("/translate"):
+            seen["translate"] = payload
+            return httpx.Response(200, json={
+                "cached": False, "backend": payload["backend"],
+                "translations": {t: f"[{t}]X" for t in payload["targets"]},
+                "partial_cached_targets": [],
+            })
+        if req.url.path.endswith("/embed"):
+            seen["embed"] = payload
+            return httpx.Response(200, json={
+                "cached": False, "backend": payload["backend"],
+                "dim": dim, "vector": [0.25] * dim,
+                "encoder_id": "labse@1.0.0-836121a",
+            })
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    async def _fake_aenter(self):
+        self._client = httpx.AsyncClient(transport=transport, base_url=self.base_url)
+        return self
+
+    monkeypatch.setattr(LinguisticsClient, "__aenter__", _fake_aenter)
+
+    rule = TranslationEnrichmentAuthority()
+    e = _entity(name="Ministero della Difesa", name_lang="it")
+    decision = await rule.resolve(e, (await rule.find_candidates(e))[0])
+
+    # Wire contract: the rule requested the configured (default) backend…
+    assert seen["embed"]["backend"] == default_backend == "labse-local"
+    # …and the vector it writes is dim-consistent with the vector index,
+    # so Neo4j will actually index it.
+    assert decision.action == "enrich"
+    assert len(decision.details["embedding"]) == AUTHORITY_NAME_EMBEDDING_DIMS
+    assert decision.details["embedding_encoder"] == "labse@1.0.0-836121a"
+
+
+async def test_resolve_honours_embedding_backend_override(monkeypatch):
+    """CONSOLIDATOR_LINGUISTICS_EMBEDDING_BACKEND=mistral-embed still works —
+    the rule forwards whatever backend the settings carry."""
+    import json
+
+    monkeypatch.setattr(
+        "src.config.settings.linguistics_embedding_backend", "mistral-embed",
+    )
+
+    seen: dict[str, dict] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        payload = json.loads(req.content)
+        if req.url.path.endswith("/translate"):
+            return httpx.Response(200, json={
+                "cached": False, "backend": payload["backend"],
+                "translations": {t: f"[{t}]X" for t in payload["targets"]},
+                "partial_cached_targets": [],
+            })
+        if req.url.path.endswith("/embed"):
+            seen["embed"] = payload
+            return httpx.Response(200, json={
+                "cached": False, "backend": payload["backend"],
+                "dim": 1024, "vector": [0.25] * 1024,
+                "encoder_id": "mistral-embed@api-mistral-embed-2312",
+            })
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    async def _fake_aenter(self):
+        self._client = httpx.AsyncClient(transport=transport, base_url=self.base_url)
+        return self
+
+    monkeypatch.setattr(LinguisticsClient, "__aenter__", _fake_aenter)
+
+    rule = TranslationEnrichmentAuthority()
+    e = _entity(name="X", name_lang="en")
+    decision = await rule.resolve(e, (await rule.find_candidates(e))[0])
+
+    assert seen["embed"]["backend"] == "mistral-embed"
+    assert decision.details["embedding_encoder"] == (
+        "mistral-embed@api-mistral-embed-2312"
+    )

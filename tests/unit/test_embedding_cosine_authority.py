@@ -273,3 +273,49 @@ async def test_rule_registered_in_loader():
     assert names.index("embedding_cosine_authority") < names.index(
         "gds_node_similarity_authority"
     )
+
+
+# ── encoder-homogeneity gate (Cypher-side) ───────────────────────────
+
+async def test_query_gates_on_encoder_equality(monkeypatch):
+    """Mismatched-encoder rejection lives in the Cypher WHERE clause:
+    `node.name_embedding_encoder = $enc` with $enc taken from the query
+    entity. Pin the clause text + the bound param so a refactor can't
+    silently drop the homogeneity gate (cross-encoder cosines are
+    meaningless — different vector spaces)."""
+    driver, session = _mock_driver_with_records([])
+
+    async def _fake_get_driver():
+        return driver
+    monkeypatch.setattr(
+        "src.consolidator.neo4j.client.get_driver", _fake_get_driver,
+    )
+
+    rule = EmbeddingCosineSameAuthority()
+    mistral_enc = "mistral-embed@api-mistral-embed-2312"
+    await rule.find_candidates(_authority(name_embedding_encoder=mistral_enc))
+
+    args, kwargs = session.run.call_args
+    assert "node.name_embedding_encoder = $enc" in args[0]
+    # The gate follows the entity's own encoder — a mistral-encoded
+    # entity is only ever compared against mistral-encoded siblings.
+    assert kwargs["enc"] == mistral_enc
+
+
+async def test_applies_accepts_the_default_pipeline_encoder(monkeypatch):
+    """The labse-local default pipeline (labse@… encoder ids, 768-d,
+    matching authority_name_embedding_idx) must be accepted — this is
+    the configuration prod actually runs after the defaults fix."""
+    from src.config import EMBEDDING_BACKEND_DIMS
+    from src.consolidator.neo4j.migrations import AUTHORITY_NAME_EMBEDDING_DIMS
+
+    monkeypatch.setattr(_settings, "embedding_cosine_enabled", True)
+    dim = EMBEDDING_BACKEND_DIMS[_settings.linguistics_embedding_backend]
+    assert dim == AUTHORITY_NAME_EMBEDDING_DIMS
+    e = _authority(
+        name_embedding=[0.1] * dim,
+        name_embedding_encoder="labse@1.0.0-836121a",
+        name_embedding_dim=dim,
+    )
+    rule = EmbeddingCosineSameAuthority()
+    assert await rule.applies(e) is True

@@ -34,7 +34,11 @@ class LinguisticsClient:
     base_url: str
     timeout_s: float = 60.0
     translation_backend: str = "mistral"
-    embedding_backend: str = "mistral-embed"
+    # Default matches settings.linguistics_embedding_backend — labse-local
+    # is 768-d, consistent with the authority_name_embedding_idx vector
+    # index. Callers that want mistral-embed must also provision a
+    # 1024-d index.
+    embedding_backend: str = "labse-local"
     _client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "LinguisticsClient":
