@@ -85,3 +85,19 @@ def test_module_singleton_uses_the_same_defaults():
     # `settings` is instantiated at import time; guard against a stale
     # singleton diverging from the class defaults under test.
     assert settings.linguistics_embedding_backend in EMBEDDING_BACKEND_DIMS
+
+
+def test_translation_default_is_local_backend():
+    """The 166k-authority multilingual backfill must not ride the paid
+    Mistral chat API by default: 23 target languages per authority is
+    ~3.8M chat calls. nllb-local is served by the same linguistics
+    deployment at zero marginal cost; mistral stays reachable via
+    CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND."""
+    assert Settings().linguistics_translation_backend == "nllb-local"
+
+
+def test_mistral_translation_stays_available_via_env_override(monkeypatch):
+    monkeypatch.setenv(
+        "CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND", "mistral",
+    )
+    assert Settings().linguistics_translation_backend == "mistral"
