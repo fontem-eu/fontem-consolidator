@@ -33,7 +33,7 @@ EU_OFFICIAL_LANGS: tuple[str, ...] = (
 class LinguisticsClient:
     base_url: str
     timeout_s: float = 60.0
-    translation_backend: str = "nllb-local"
+    translation_backend: str = "mistral"
     # Default matches settings.linguistics_embedding_backend — labse-local
     # is 768-d, consistent with the authority_name_embedding_idx vector
     # index. Callers that want mistral-embed must also provision a
