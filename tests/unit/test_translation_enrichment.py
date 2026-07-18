@@ -323,7 +323,7 @@ async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
     # so Neo4j will actually index it.
     assert decision.action == "enrich"
     assert len(decision.details["embedding"]) == AUTHORITY_NAME_EMBEDDING_DIMS
-    assert decision.details["embedding_encoder"] == "labse@1.0.0-836121a"
+    assert decision.details["embedding_encoder"] == "mistral-embed@api-mistral-embed-2312"
 
 
 async def test_resolve_honours_embedding_backend_override(monkeypatch):
