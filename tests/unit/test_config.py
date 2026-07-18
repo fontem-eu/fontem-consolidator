@@ -87,17 +87,19 @@ def test_module_singleton_uses_the_same_defaults():
     assert settings.linguistics_embedding_backend in EMBEDDING_BACKEND_DIMS
 
 
-def test_translation_default_is_local_backend():
-    """The 166k-authority multilingual backfill must not ride the paid
-    Mistral chat API by default: 23 target languages per authority is
-    ~3.8M chat calls. nllb-local is served by the same linguistics
-    deployment at zero marginal cost; mistral stays reachable via
-    CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND."""
-    assert Settings().linguistics_translation_backend == "nllb-local"
-
-
-def test_mistral_translation_stays_available_via_env_override(monkeypatch):
-    monkeypatch.setenv(
-        "CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND", "mistral",
-    )
+def test_translation_default_is_mistral():
+    """Measured on prod 2026-07-18: one Mistral chat call translates all
+    23 target languages per authority (~166k one-time calls under the
+    linguistics service's $50/day spend cap), while a 23-target
+    nllb-local request takes 182s on CPU and 502s — months of wall
+    clock for the same backfill. The paid-but-capped API is the design;
+    nllb-local stays reachable via
+    CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND for offline use."""
     assert Settings().linguistics_translation_backend == "mistral"
+
+
+def test_nllb_translation_stays_available_via_env_override(monkeypatch):
+    monkeypatch.setenv(
+        "CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND", "nllb-local",
+    )
+    assert Settings().linguistics_translation_backend == "nllb-local"

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     linguistics_url: str = "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080"
     linguistics_enabled: bool = True
     linguistics_timeout_s: float = 60.0
-    linguistics_translation_backend: str = "nllb-local"
+    linguistics_translation_backend: str = "mistral"
     # Default embedding backend MUST form a working pipeline with the
     # authority_name_embedding_idx vector index (768-d, migrations.py):
     # labse-local is 768-d, so enrichment writes vectors the index can
