@@ -17,8 +17,13 @@ from src.consolidator.neo4j import migrations
 
 # ── default backend ↔ vector index dims (the DOA regression) ─────────
 
-def test_default_embedding_backend_is_labse_local():
-    assert Settings().linguistics_embedding_backend == "labse-local"
+def test_default_embedding_backend_is_mistral_embed():
+    """labse-local was the intended default (#189) but the signed model
+    mirror ships only config/pooling for labse-1.0.0 — no weights — so
+    the backend 500s on every call (verified in prod 2026-07-18).
+    mistral-embed works today, costs cents for short names, and the
+    encoder_id stamp keeps a future labse migration clean."""
+    assert Settings().linguistics_embedding_backend == "mistral-embed"
 
 
 def test_default_backend_dim_matches_authority_vector_index():

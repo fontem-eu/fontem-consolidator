@@ -39,16 +39,16 @@ class Settings(BaseSettings):
     linguistics_timeout_s: float = 60.0
     linguistics_translation_backend: str = "mistral"
     # Default embedding backend MUST form a working pipeline with the
-    # authority_name_embedding_idx vector index (768-d, migrations.py):
-    # labse-local is 768-d, so enrichment writes vectors the index can
+    # authority_name_embedding_idx vector index (1024-d, migrations.py):
+    # mistral-embed is 1024-d, so enrichment writes vectors the index can
     # hold and embedding_cosine_authority can compare. mistral-embed
     # (1024-d) stays available via CONSOLIDATOR_LINGUISTICS_EMBEDDING_BACKEND,
     # but switching requires a matching-dim vector index — 1024-d vectors
-    # are silently NOT indexed by a 768-d index, which is exactly how the
+    # are silently NOT indexed by a mismatched-dim index, which is exactly how the
     # embedding-similarity feature shipped dead-on-arrival (zero
     # authorities enriched in prod). See EMBEDDING_BACKEND_DIMS above and
     # tests/unit/test_config.py which pins this consistency.
-    linguistics_embedding_backend: str = "labse-local"
+    linguistics_embedding_backend: str = "mistral-embed"
 
     # embedding_cosine_authority rule — flags Authority duplicates whose
     # LaBSE name-embedding cosine is above threshold. Never auto-merges.

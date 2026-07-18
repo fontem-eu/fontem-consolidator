@@ -301,7 +301,7 @@ async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
             return httpx.Response(200, json={
                 "cached": False, "backend": payload["backend"],
                 "dim": dim, "vector": [0.25] * dim,
-                "encoder_id": "labse@1.0.0-836121a",
+                "encoder_id": "mistral-embed@api-mistral-embed-2312",
             })
         return httpx.Response(404)
 
@@ -318,7 +318,7 @@ async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
     decision = await rule.resolve(e, (await rule.find_candidates(e))[0])
 
     # Wire contract: the rule requested the configured (default) backend…
-    assert seen["embed"]["backend"] == default_backend == "labse-local"
+    assert seen["embed"]["backend"] == default_backend == "mistral-embed"
     # …and the vector it writes is dim-consistent with the vector index,
     # so Neo4j will actually index it.
     assert decision.action == "enrich"
