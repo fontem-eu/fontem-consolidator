@@ -1,6 +1,15 @@
 from loguru import logger
 from neo4j import AsyncDriver
 
+# Dimensionality of the authority_name_embedding_idx vector index.
+# MUST match the dim of the embedding backend the enrichment rule is
+# configured with (settings.linguistics_embedding_backend →
+# src.config.EMBEDDING_BACKEND_DIMS): Neo4j silently skips indexing any
+# vector whose length differs from the index declaration, so a mismatch
+# doesn't error — it just makes every k-NN lookup return nothing.
+# Pinned by tests/unit/test_config.py.
+AUTHORITY_NAME_EMBEDDING_DIMS = 768
+
 INDEX_CYPHER = [
     (
         "CREATE INDEX decisionlog_entity IF NOT EXISTS "
@@ -67,7 +76,7 @@ INDEX_CYPHER = [
         "CREATE VECTOR INDEX authority_name_embedding_idx IF NOT EXISTS "
         "FOR (a:Authority) ON (a.name_embedding) "
         "OPTIONS {indexConfig: {"
-        "`vector.dimensions`: 768, "
+        f"`vector.dimensions`: {AUTHORITY_NAME_EMBEDDING_DIMS}, "
         "`vector.similarity_function`: 'cosine'"
         "}}"
     ),
