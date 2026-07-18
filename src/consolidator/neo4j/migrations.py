@@ -8,7 +8,7 @@ from neo4j import AsyncDriver
 # vector whose length differs from the index declaration, so a mismatch
 # doesn't error — it just makes every k-NN lookup return nothing.
 # Pinned by tests/unit/test_config.py.
-AUTHORITY_NAME_EMBEDDING_DIMS = 768
+AUTHORITY_NAME_EMBEDDING_DIMS = 1024
 
 INDEX_CYPHER = [
     (
@@ -66,7 +66,8 @@ INDEX_CYPHER = [
     # is an index seek, not a Company label scan.
     "CREATE INDEX company_registered_as_country IF NOT EXISTS "
     "FOR (c:Company) ON (c.registered_as, c.country)",
-    # Vector index on Authority name_embedding (LaBSE, 768-d, cosine).
+    # Vector index on Authority name_embedding (mistral-embed, 1024-d,
+    # cosine — see AUTHORITY_NAME_EMBEDDING_DIMS).
     # Powers the embedding_cosine_authority rule's k-NN lookup; without
     # it the rule would fall back to a full 61k × 768 dot-product scan
     # per candidate and become unusable. Only one encoder is loaded at
@@ -106,8 +107,24 @@ BACKFILL_CYPHER = [
 ]
 
 
+async def _drop_stale_vector_index(session) -> None:
+    """CREATE VECTOR INDEX IF NOT EXISTS never updates an existing index,
+    so a dims change (768 -> 1024 when the encoder moved from labse to
+    mistral-embed) would silently keep the old index and the new vectors
+    would never be indexed. Drop it iff its dimensions disagree."""
+    result = await session.run(
+        "SHOW VECTOR INDEXES YIELD name, options "
+        "WHERE name = 'authority_name_embedding_idx' "
+        "RETURN options.indexConfig['vector.dimensions'] AS dims",
+    )
+    record = await result.single()
+    if record is not None and record["dims"] != AUTHORITY_NAME_EMBEDDING_DIMS:
+        await session.run("DROP INDEX authority_name_embedding_idx")
+
+
 async def apply(driver: AsyncDriver, database: str) -> None:
     async with driver.session(database=database) as session:
+        await _drop_stale_vector_index(session)
         for stmt in INDEX_CYPHER:
             await session.run(stmt)
     logger.info(
