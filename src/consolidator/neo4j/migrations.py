@@ -59,6 +59,16 @@ INDEX_CYPHER = [
     # the resolver query becomes a sub-100ms index lookup.
     "CREATE INDEX company_name_clean IF NOT EXISTS FOR (c:Company) ON (c.name_clean)",
     "CREATE INDEX authority_name_clean IF NOT EXISTS FOR (a:Authority) ON (a.name_clean)",
+    # last_consolidated_at: the re-consolidation sweeper's rotation
+    # cursor. The sweeper pages the stalest entities with
+    #   ORDER BY coalesce(n.last_consolidated_at, datetime('1970-01-01')) ASC
+    # so without a range index on the property every page is a full
+    # label scan (~3.6M Company / ~165k Authority rows) plus a sort.
+    # With the index the "oldest first" page is an index-ordered scan.
+    "CREATE INDEX company_last_consolidated IF NOT EXISTS "
+    "FOR (c:Company) ON (c.last_consolidated_at)",
+    "CREATE INDEX authority_last_consolidated IF NOT EXISTS "
+    "FOR (a:Authority) ON (a.last_consolidated_at)",
     # registered_as + country: the national business-register ID
     # (GLEIF RegistrationAuthorityEntityID), matched only alongside an
     # agreeing country because the number is unique per jurisdiction,
