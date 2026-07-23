@@ -11,6 +11,16 @@ _ID_KEY_BY_TYPE: dict[str, str] = {
 }
 
 
+def id_key_for(entity_type: str) -> str:
+    """Neo4j property that uniquely keys an entity of this type.
+
+    Authority is the safe fallback for unknown labels — it matches the
+    engine's default entity_type handling and keeps callers (e.g. the
+    re-consolidation sweeper) from having to duplicate this mapping.
+    """
+    return _ID_KEY_BY_TYPE.get(entity_type, "authority_id")
+
+
 async def load(
     driver: AsyncDriver,
     database: str,
@@ -18,7 +28,7 @@ async def load(
     entity_type: str,
     entity_id: str,
 ) -> Entity | None:
-    id_key = _ID_KEY_BY_TYPE.get(entity_type, "authority_id")
+    id_key = id_key_for(entity_type)
     async with driver.session(database=database) as session:
         result = await session.run(
             f"MATCH (n:{entity_type} {{{id_key}: $id}}) RETURN n",
