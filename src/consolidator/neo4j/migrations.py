@@ -83,6 +83,12 @@ INDEX_CYPHER = [
     # per candidate and become unusable. Only one encoder is loaded at
     # a time so a single index is sufficient — if we ever run two
     # encoders in parallel we add a second index keyed by encoder_id.
+    # Fulltext index on Company.name — the fuzzy_name_same_country rule
+    # retrieves candidates via db.index.fulltext.queryNodes('company_name_ft').
+    # Without it that rule silently returns no candidates (it catches the
+    # "no such index" error), so fuzzy company dedup never runs. Missing in
+    # prod until 2026-07-23; the sweeper surfaced it.
+    "CREATE FULLTEXT INDEX company_name_ft IF NOT EXISTS FOR (n:Company) ON EACH [n.name]",
     (
         "CREATE VECTOR INDEX authority_name_embedding_idx IF NOT EXISTS "
         "FOR (a:Authority) ON (a.name_embedding) "
