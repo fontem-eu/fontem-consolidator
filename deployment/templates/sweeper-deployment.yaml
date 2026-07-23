@@ -1,0 +1,120 @@
+{{- /*
+consolidator-sweeper — continuous re-consolidation of the entity graph.
+
+Same image as the API pod, different entrypoint
+(`python -m src.consolidator.sweeper`). Pages the stalest Company /
+Authority entities oldest-first, re-runs the match-only consolidation
+pipeline on each, and stamps n.last_consolidated_at as the rotation
+cursor. Catches duplicates the event-driven consolidator-trigger never
+saw (e.g. entities upserted while the trigger was scaled to 0) and gives
+merge-changed neighbourhoods the repeated passes dedup needs to converge.
+
+Deployment shape mirrors consolidator-trigger: single replica, linkerd
+disabled (long-running Neo4j driver, data-tier exemption), Prometheus on
+:9100. DISABLED by default (sweeperReplicas defaults to 0) — enable it
+per-environment from the gitops value file (real prod only, for now).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: consolidator-sweeper
+  labels:
+    app: consolidator-sweeper
+    component: sweeper
+spec:
+  # Off by default so merging the chart doesn't start a graph-wide sweep
+  # anywhere. Set `sweeperReplicas: 1` in the env value file to enable.
+  # Explicit nil-check (not `| default`) so an explicit 0 is honoured.
+  replicas: {{ if hasKey .Values "sweeperReplicas" }}{{ .Values.sweeperReplicas }}{{ else }}0{{ end }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: consolidator-sweeper
+  template:
+    metadata:
+      labels:
+        app: consolidator-sweeper
+        component: sweeper
+      annotations:
+        # Data-tier exemption like the trigger/sinks — the sweeper holds a
+        # long-running async Neo4j driver, so keep the linkerd sidecar out.
+        linkerd.io/inject: disabled
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: sweeper
+          image: contribute.void42.internal/fontem/fontem-consolidator:{{ .Values.version }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "src.consolidator.sweeper"]
+          ports:
+            - containerPort: 9100
+              name: metrics
+          env:
+            # Neo4j creds — same secret the API pod uses (the sweeper talks
+            # to Neo4j directly via src.consolidator.neo4j.client).
+            - name: CONSOLIDATOR_NEO4J_URI
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_URI
+            - name: CONSOLIDATOR_NEO4J_USER
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_USER
+            - name: CONSOLIDATOR_NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-credentials
+                  key: NEO4J_PASSWORD
+            # Mirror the API pod's auto-merge gate so the sweep applies the
+            # same policy (prod = flag-only). match_only still skips enrich.
+            - name: CONSOLIDATOR_AUTO_MERGE_ENABLED
+              value: "{{ .Values.autoMergeEnabled }}"
+            # Rotation rates. Company default 6/s (~3.6M / ~1 week),
+            # Authority default 2/s (~165k / ~1 day).
+            - name: SWEEP_COMPANY_RATE_PER_SEC
+              value: "{{ .Values.sweepCompanyRatePerSec | default 6 }}"
+            - name: SWEEP_AUTHORITY_RATE_PER_SEC
+              value: "{{ .Values.sweepAuthorityRatePerSec | default 2 }}"
+            - name: SWEEP_PAGE_SIZE
+              value: "{{ .Values.sweepPageSize | default 200 }}"
+            - name: METRICS_PORT
+              value: "9100"
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /metrics, port: 9100 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /metrics, port: 9100 }
+            periodSeconds: 30
+            failureThreshold: 3
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: consolidator-sweeper
+  labels:
+    app: consolidator-sweeper
+spec:
+  selector:
+    app: consolidator-sweeper
+  ports:
+    - { name: metrics, port: 9100, targetPort: 9100 }
