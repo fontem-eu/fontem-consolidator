@@ -114,7 +114,6 @@ def test_company_name_fulltext_index_present():
     """The fuzzy_name_same_country rule depends on the company_name_ft
     fulltext index; it silently no-ops without it (see fuzzy.find_candidates).
     Guard so it can't fall out of the migration list again."""
-    from src.consolidator.neo4j import migrations
     joined = " ".join(migrations.INDEX_CYPHER)
     assert "company_name_ft" in joined
     assert "FULLTEXT INDEX company_name_ft" in joined
