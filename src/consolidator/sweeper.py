@@ -204,6 +204,43 @@ async def _interruptible_sleep(stop_event: asyncio.Event, seconds: float) -> Non
         pass
 
 
+async def _sweep_one(
+    driver: AsyncDriver, database: str, label: str, key: str, entity_id: str
+) -> str:
+    """Re-consolidate one entity (match-only, GDS-excluded) and stamp the
+    rotation cursor. Never raises: a poison entity is logged and STILL
+    stamped so the cursor advances past it on the next page. Returns the
+    coarse outcome for the metric ("merged"/"flagged"/.../"error")."""
+    outcome = "error"
+    try:
+        result = await engine.consolidate(
+            driver,
+            database,
+            entity_type=label,
+            entity_id=entity_id,
+            triggered_by="sweeper",
+            exclude_rule_prefix="gds_",
+            mode="match_only",
+        )
+        outcome = _classify(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "sweeper[{label}]: consolidate failed for {id} ({err}); continuing",
+            label=label, id=entity_id, err=repr(exc),
+        )
+    finally:
+        try:
+            await _stamp(driver, database, label, key, entity_id)
+        # If even the stamp fails the entity stays stale and is retried
+        # next rotation — acceptable, just log it.
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "sweeper[{label}]: stamp failed for {id} ({err})",
+                label=label, id=entity_id, err=repr(exc),
+            )
+    return outcome
+
+
 async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     driver: AsyncDriver,
     database: str,
@@ -251,36 +288,7 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
             if stop_event.is_set():
                 break
             await pacer.wait()
-            outcome = "error"
-            try:
-                result = await engine.consolidate(
-                    driver,
-                    database,
-                    entity_type=label,
-                    entity_id=entity_id,
-                    triggered_by="sweeper",
-                    exclude_rule_prefix="gds_",
-                    mode="match_only",
-                )
-                outcome = _classify(result)
-            # A poison entity must never wedge the rotation: log, count
-            # it as an error, and — crucially — still stamp it below so
-            # the cursor advances past it on the next page.
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning(
-                    "sweeper[{label}]: consolidate failed for {id} ({err}); continuing",
-                    label=label, id=entity_id, err=repr(exc),
-                )
-            finally:
-                try:
-                    await _stamp(driver, database, label, key, entity_id)
-                # If even the stamp fails the entity stays stale and is
-                # retried next rotation — acceptable, just log it.
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    logger.warning(
-                        "sweeper[{label}]: stamp failed for {id} ({err})",
-                        label=label, id=entity_id, err=repr(exc),
-                    )
+            outcome = await _sweep_one(driver, database, label, key, entity_id)
             SWEEP_ENTITIES.labels(label=label, outcome=outcome).inc()
 
 
