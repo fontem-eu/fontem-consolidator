@@ -108,6 +108,22 @@ jobs:
           echo "$COSIGN_KEY" > /tmp/cosign.key
           cosign sign --key /tmp/cosign.key --yes --allow-http-registry gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
           rm /tmp/cosign.key
+      - name: Attest CycloneDX SBOM
+        # Bind a CycloneDX SBOM attestation so require-sbom-attestation passes
+        # (this image was signed-but-unattested). cosign is already on PATH
+        # from the sign step; requirements-based gen needs no dep compilation;
+        # cosign v2.4.1 writes the legacy format Kyverno reads.
+        env:
+          COSIGN_PASSWORD: ""
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+        run: |
+          python3 -m pip install --quiet --no-cache-dir cyclonedx-bom
+          cyclonedx-py requirements requirements.txt --of json -o sbom.json
+          echo "$COSIGN_KEY" > /tmp/cosign.key
+          cosign attest --key /tmp/cosign.key --predicate sbom.json --type cyclonedx \
+            --yes --allow-http-registry \
+            gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
+          rm /tmp/cosign.key
       - name: Deploy to gitops (prod — singleton)
         run: |
           # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects
