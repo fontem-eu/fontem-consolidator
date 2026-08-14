@@ -127,8 +127,11 @@ jobs:
         run: |
           (
             set -euo pipefail
-            python3 -m pip install --break-system-packages --quiet --no-cache-dir cyclonedx-bom
-            cyclonedx-py requirements requirements.txt --of json -o sbom.json
+            # Image-based SBOM via syft — no python/pip on the build runner
+            # (the pip approach failed there). syft reads the image straight
+            # from the local docker daemon that just built it.
+            curl -sL https://nexus.void42.internal/repository/github-releases/anchore/syft/releases/download/v1.18.0/syft_1.18.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin syft
+            syft "gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG" -o cyclonedx-json=sbom.json
             test -s sbom.json
             echo "$COSIGN_KEY" > /tmp/cosign.key
             cosign attest --key /tmp/cosign.key --predicate sbom.json --type cyclonedx \
