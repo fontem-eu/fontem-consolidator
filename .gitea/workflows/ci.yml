@@ -116,9 +116,15 @@ jobs:
         env:
           COSIGN_PASSWORD: ""
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          # Runners reach PyPI only through the nexus proxy; without this pip
+          # fails and (previously, sans set -e) the step passed silently.
+          PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
+          PIP_TRUSTED_HOST: nexus.void42.internal
         run: |
-          python3 -m pip install --quiet --no-cache-dir cyclonedx-bom
+          set -euo pipefail
+          python3 -m pip install --break-system-packages --quiet --no-cache-dir cyclonedx-bom
           cyclonedx-py requirements requirements.txt --of json -o sbom.json
+          test -s sbom.json
           echo "$COSIGN_KEY" > /tmp/cosign.key
           cosign attest --key /tmp/cosign.key --predicate sbom.json --type cyclonedx \
             --yes --allow-http-registry \
