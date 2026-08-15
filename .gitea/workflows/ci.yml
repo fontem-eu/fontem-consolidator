@@ -138,7 +138,7 @@ jobs:
               --yes --allow-http-registry \
               gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
             rm -f /tmp/cosign.key
-          ) || echo "::warning::SBOM attestation failed — image signed but unattested (tracked in supply-chain rollout)"
+          )
       - name: Deploy to gitops (prod — singleton)
         run: |
           # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects
