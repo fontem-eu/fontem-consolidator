@@ -114,10 +114,13 @@ jobs:
           registry-password: ${{ secrets.REGISTRY_PASSWORD }}
           sbom-path: ${{ steps.sbom.outputs.sbom-path }}
 
-      - name: Deploy to gitops (prod — singleton)
-        # Consolidator is a singleton with no staging/testing rung, so it
-        # deploys straight to prod via the chart `version:` field, same
-        # mechanism as the other Helm-charted services.
+      - name: Deploy to gitops (shared — singleton)
+        # Consolidator is a singleton whose only ArgoCD-managed instance is
+        # the fontem-shared one (fontem-prod is held at 0 replicas). Its
+        # image is set by the chart `version:` field in shared/fontem-
+        # consolidator.yaml — the previous target `prod/fontem-consolidator.yaml`
+        # never existed, so this step failed on every build (795-812) and the
+        # freshly-built image was never rolled out. Prod stays manual.
         env:
           TAG: ${{ steps.image.outputs.tag }}
         run: |
@@ -127,9 +130,11 @@ jobs:
             "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@contribute.void42.internal/fontem/gitops.git" \
             /tmp/gitops
           cd /tmp/gitops
-          sed -i 's/version: ".*"/version: "'"$TAG"'"/' prod/fontem-consolidator.yaml
+          # Fail loud if the target ever moves again rather than silently no-op.
+          test -f shared/fontem-consolidator.yaml
+          sed -i 's/version: ".*"/version: "'"$TAG"'"/' shared/fontem-consolidator.yaml
           git config user.name "GMR CI"
           git config user.email "ci@void42.internal"
-          git add prod/fontem-consolidator.yaml
-          git diff --cached --quiet || git commit -m "ci: deploy fontem-consolidator $TAG"
+          git add shared/fontem-consolidator.yaml
+          git diff --cached --quiet || git commit -m "ci: deploy fontem-consolidator $TAG to fontem-shared"
           git push origin main
