@@ -71,82 +71,63 @@ jobs:
   build-deploy:
     needs: test
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: python
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Docker
-        run: curl -fsSL https://nexus.void42.internal/repository/docker-releases/linux/static/stable/x86_64/docker-27.5.1.tgz | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+      - uses: actions/checkout@v4
+        with:
+          repository: void42/ci-actions
+          path: .ci-actions
+          token: ${{ secrets.CI_READ_TOKEN }}
+
       - name: Vendor internal Python deps for docker build
         # The Dockerfile pip-installs vendor/gmr-event-schemas + vendor/gmr-events.
-        # pip's isolated-build env can't reach Gitea; we clone here at CI time
-        # with CI_READ_TOKEN, then docker build copies them in.
+        # pip's isolated-build env can't reach Gitea; clone them here at CI time
+        # with CI_READ_TOKEN so `docker build` can COPY them into the build stage.
         env:
           CI_READ_TOKEN: ${{ secrets.CI_READ_TOKEN }}
         run: |
-          mkdir -p vendor
-          for repo in gmr-event-schemas gmr-events; do
-              rm -rf "vendor/$repo"
-              git clone --depth 1 \
-                  "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/${repo}.git" \
-                  "vendor/$repo"
-              rm -rf "vendor/$repo/.git"
-          done
-      - name: Build and push image
-        run: |
-          TAG="v$(git rev-parse --short HEAD)"
-          echo "TAG=$TAG" >> $GITHUB_ENV
-          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login gitea-http.dev-tools.svc.cluster.local:3000 -u "${{ secrets.REGISTRY_USER }}" --password-stdin
-          docker build --network host -t gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG .
-          docker push gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
-      - name: Sign image with Cosign
-        env:
-          COSIGN_PASSWORD: ""
-          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
-        run: |
-          curl -sL https://nexus.void42.internal/repository/github-releases/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
-          echo "$COSIGN_KEY" > /tmp/cosign.key
-          cosign sign --key /tmp/cosign.key --yes --allow-http-registry gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
-          rm /tmp/cosign.key
-      - name: Attest CycloneDX SBOM
-        # Bind a CycloneDX SBOM attestation so require-sbom-attestation passes
-        # (this image was signed-but-unattested). cosign is already on PATH
-        # from the sign step; requirements-based gen needs no dep compilation;
-        # cosign v2.4.1 writes the legacy format Kyverno reads.
-        env:
-          COSIGN_PASSWORD: ""
-          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
-          # Runners reach PyPI only through the nexus proxy; without this pip
-          # fails and (previously, sans set -e) the step passed silently.
-          PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
-          PIP_TRUSTED_HOST: nexus.void42.internal
-        # Best-effort: this must not break the deploy while the python-SBOM
-        # tooling on the build runner is still being sorted out. The image is
-        # already signed; a missing SBOM only shows in the (Audit) policy
-        # report. Runs in a subshell so any failure is contained + warned.
-        run: |
-          (
-            set -euo pipefail
-            # Image-based SBOM via syft — no python/pip on the build runner
-            # (the pip approach failed there). syft reads the image straight
-            # from the local docker daemon that just built it.
-            curl -sL https://nexus.void42.internal/repository/github-releases/anchore/syft/releases/download/v1.18.0/syft_1.18.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin syft
-            syft "gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG" -o cyclonedx-json=sbom.json
-            test -s sbom.json
-            echo "$COSIGN_KEY" > /tmp/cosign.key
-            cosign attest --key /tmp/cosign.key --predicate sbom.json --type cyclonedx \
-              --yes --allow-http-registry \
-              gitea-http.dev-tools.svc.cluster.local:3000/fontem/fontem-consolidator:$TAG
-            rm -f /tmp/cosign.key
-          )
+          rm -rf vendor && mkdir -p vendor
+          git clone --depth 1 \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-event-schemas.git" \
+              vendor/gmr-event-schemas
+          git clone --depth 1 \
+              "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
+              vendor/gmr-events
+          rm -rf vendor/gmr-event-schemas/.git vendor/gmr-events/.git
+
+      - id: sbom
+        name: Generate + upload SBOM
+        uses: ./.ci-actions/actions/sbom-generate
+        with:
+          language: python
+          project-name: fontem-consolidator
+          project-version: ${{ github.sha }}
+
+      - id: image
+        name: Build, push, sign, attest
+        uses: ./.ci-actions/actions/docker-build-sign
+        with:
+          image: contribute.void42.internal/fontem/fontem-consolidator
+          cosign-key: ${{ secrets.COSIGN_KEY }}
+          registry-user: ${{ secrets.REGISTRY_USER }}
+          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
+          sbom-path: ${{ steps.sbom.outputs.sbom-path }}
+
       - name: Deploy to gitops (prod — singleton)
+        # Consolidator is a singleton with no staging/testing rung, so it
+        # deploys straight to prod via the chart `version:` field, same
+        # mechanism as the other Helm-charted services.
+        env:
+          TAG: ${{ steps.image.outputs.tag }}
         run: |
-          # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects
-          # the registry deploy token even when the same combo works
-          # for `docker login` to the gitea registry.
-          git clone --depth=1 "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@gitea-http.dev-tools.svc.cluster.local:3000/fontem/gitops.git" /tmp/gitops
+          # Explicit ${USER}:${TOKEN}@ form; the OAuth2 scheme rejects the
+          # registry deploy token even when the same combo works for docker login.
+          git clone --depth=1 \
+            "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@contribute.void42.internal/fontem/gitops.git" \
+            /tmp/gitops
           cd /tmp/gitops
-          sed -i 's/version: ".*"/version: "'$TAG'"/' prod/fontem-consolidator.yaml
+          sed -i 's/version: ".*"/version: "'"$TAG"'"/' prod/fontem-consolidator.yaml
           git config user.name "GMR CI"
           git config user.email "ci@void42.internal"
           git add prod/fontem-consolidator.yaml
