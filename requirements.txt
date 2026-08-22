@@ -5,7 +5,7 @@ fastapi==0.136.3
 # clears both. fastapi 0.136.1 dropped the upper bound on starlette
 # (`>=0.46.0` only), so the pin is compatible.
 starlette==0.52.1
-uvicorn[standard]==0.47.0
+uvicorn[standard]==0.52.1
 neo4j==6.2.0
 graphdatascience==1.22
 loguru==0.7.3
