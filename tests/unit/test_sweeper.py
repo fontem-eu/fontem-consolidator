@@ -18,7 +18,7 @@ Covers the rotation contract:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -314,3 +314,124 @@ async def test_sweep_loop_increments_outcome_counter():
     assert REGISTRY.get_sample_value(
         "consolidator_sweep_rate", {"label": "Company"}
     ) == 0.0
+
+
+# ── run() / main() ────────────────────────────────────────────────────────
+# The process entrypoint had no tests: 29 of the module's uncovered lines
+# live here. What matters is ordering and shutdown — migrations must land
+# before any sweep task starts (they create the last_consolidated range
+# indexes the oldest-first page depends on), and a SIGTERM must drain the
+# tasks and close the driver rather than drop connections on the floor.
+
+
+def _run_env():
+    """Everything run() touches, stubbed. Returns the patch context + spies."""
+    spies = {
+        "migrate": AsyncMock(),
+        "close": AsyncMock(),
+        "driver": AsyncMock(),
+        "load_rules": patch.object(sweeper, "load_rules"),
+        "http": patch.object(sweeper, "start_http_server"),
+    }
+    return spies
+
+
+@pytest.mark.asyncio
+async def test_run_applies_migrations_before_starting_any_sweep():
+    """The sweep pages on last_consolidated; without the index it table-scans."""
+    order = []
+    cfg = sweeper.SweeperConfig(labels=["Company"], page_size=10)
+
+    async def _migrate(*_a, **_k):
+        order.append("migrate")
+
+    async def _sweep(*_a, **_k):
+        order.append("sweep")
+
+    with patch.object(sweeper, "get_driver", AsyncMock(return_value=AsyncMock())), \
+         patch.object(sweeper.migrations, "apply", _migrate), \
+         patch.object(sweeper, "load_rules") as load_rules, \
+         patch.object(sweeper, "start_http_server") as http, \
+         patch.object(sweeper, "sweep_label", _sweep), \
+         patch.object(sweeper, "close_driver", AsyncMock()):
+        task = asyncio.create_task(sweeper.run(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert order and order[0] == "migrate"
+    load_rules.assert_called_once()
+    http.assert_called_once_with(cfg.metrics_port)
+
+
+@pytest.mark.asyncio
+async def test_run_spawns_one_task_per_configured_label():
+    cfg = sweeper.SweeperConfig(labels=["Company", "Authority"], page_size=5)
+    seen = []
+
+    async def _sweep(_driver, _db, label, **_k):
+        seen.append(label)
+        await asyncio.sleep(3600)
+
+    with patch.object(sweeper, "get_driver", AsyncMock(return_value=AsyncMock())), \
+         patch.object(sweeper.migrations, "apply", AsyncMock()), \
+         patch.object(sweeper, "load_rules"), \
+         patch.object(sweeper, "start_http_server"), \
+         patch.object(sweeper, "sweep_label", _sweep), \
+         patch.object(sweeper, "close_driver", AsyncMock()):
+        task = asyncio.create_task(sweeper.run(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert sorted(seen) == ["Authority", "Company"]
+
+
+@pytest.mark.asyncio
+async def test_run_drains_tasks_and_closes_the_driver_on_shutdown():
+    """A cancelled sweep that never closes the driver leaks a Neo4j session."""
+    cfg = sweeper.SweeperConfig(labels=["Company"], page_size=5)
+    cancelled = asyncio.Event()
+
+    async def _sweep(*_a, **_k):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    close = AsyncMock()
+    with patch.object(sweeper, "get_driver", AsyncMock(return_value=AsyncMock())), \
+         patch.object(sweeper.migrations, "apply", AsyncMock()), \
+         patch.object(sweeper, "load_rules"), \
+         patch.object(sweeper, "start_http_server"), \
+         patch.object(sweeper, "sweep_label", _sweep), \
+         patch.object(sweeper, "close_driver", close), \
+         patch.object(sweeper.asyncio, "get_running_loop") as loop:
+        # Capture the stop_event the signal handlers are bound to and fire it.
+        handlers = {}
+        loop.return_value.add_signal_handler = handlers.setdefault
+        task = asyncio.create_task(sweeper.run(cfg))
+        await asyncio.sleep(0.05)
+        for cb in handlers.values():
+            cb()
+        await asyncio.wait_for(task, timeout=2)
+
+    assert cancelled.is_set()
+    close.assert_awaited_once()
+
+
+def test_main_runs_the_sweeper_loop():
+    """main() is the console entrypoint: it must hand run() to asyncio.
+
+    `run` is patched with a plain MagicMock rather than letting patch
+    autospec the coroutine function — an AsyncMock would manufacture a
+    coroutine that asyncio.run (also stubbed) never awaits, and pytest
+    surfaces that as a RuntimeWarning from the GC.
+    """
+    sentinel = object()
+    with patch.object(sweeper.asyncio, "run") as asyncio_run, \
+         patch.object(sweeper, "run", MagicMock(return_value=sentinel)) as coro:
+        sweeper.main()
+    coro.assert_called_once_with()
+    asyncio_run.assert_called_once_with(sentinel)
