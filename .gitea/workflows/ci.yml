@@ -58,7 +58,11 @@ jobs:
               "http://lucid:${CI_READ_TOKEN}@contribute.void42.internal/fontem/fontem-events.git" \
               "$tmpdir/gmr-events"
           pip install --no-cache-dir "$tmpdir/gmr-event-schemas" "$tmpdir/gmr-events"
-          python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml || true
+          # No `|| true`: a failed suite leaves no coverage.xml, the scan
+          # then runs without one, and SonarQube records no coverage at
+          # all -- which passes any coverage condition, because a metric
+          # with no value is skipped rather than failed.
+          python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
       - uses: actions/checkout@v6
         with:
           repository: void42/ci-actions
