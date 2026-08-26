@@ -8,7 +8,7 @@ jobs:
   test:
     runs-on: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install deps
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
@@ -38,7 +38,7 @@ jobs:
     needs: test
     runs-on: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install + coverage
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
@@ -63,7 +63,7 @@ jobs:
           # all -- which passes any coverage condition, because a metric
           # with no value is skipped rather than failed.
           python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: void42/ci-actions
           path: .ci-actions
@@ -77,8 +77,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: python
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: void42/ci-actions
           path: .ci-actions
