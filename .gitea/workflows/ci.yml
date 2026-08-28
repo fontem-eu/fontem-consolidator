@@ -121,14 +121,15 @@ jobs:
       - name: Deploy to gitops (shared — singleton)
         # Consolidator's only ArgoCD-managed instance is the fontem-shared one
         # (fontem-prod is held at 0 replicas and bumped manually via
-        # fontem-prod-release). The fontem-shared deployments are co-managed by
-        # TWO apps that both selfHeal: the `fontem-consolidator` chart app
-        # (image from `version:` in shared/fontem-consolidator.yaml) and
-        # `fontem-infra-shared` (literal `image:` tags in infra/shared.yaml).
-        # Both MUST carry the same tag or the two apps fight over the pod, so
-        # this step bumps both in one commit. (The previous target
-        # `prod/fontem-consolidator.yaml` never existed, which failed every
-        # build 795-812 and left the image un-rolled.)
+        # fontem-prod-release). Deployed by exactly ONE app: the
+        # `fontem-consolidator` chart app, image from `version:` in
+        # shared/fontem-consolidator.yaml. The raw manifests that used to
+        # duplicate the three deployments in infra/shared.yaml are gone —
+        # the two selfHealing apps disagreed about kube-monkey label
+        # placement and ping-ponged the objects forever (2026-08-28 sweep),
+        # so this step no longer writes infra/shared.yaml. (The previous
+        # target `prod/fontem-consolidator.yaml` never existed, which
+        # failed every build 795-812 and left the image un-rolled.)
         env:
           TAG: ${{ steps.image.outputs.tag }}
         run: |
@@ -138,17 +139,11 @@ jobs:
             "http://${{ secrets.REGISTRY_USER }}:${{ secrets.REGISTRY_PASSWORD }}@contribute.void42.internal/fontem/gitops.git" \
             /tmp/gitops
           cd /tmp/gitops
-          # Fail loud if either target ever moves rather than silently no-op.
+          # Fail loud if the target ever moves rather than silently no-op.
           test -f shared/fontem-consolidator.yaml
-          test -f infra/shared.yaml
-          grep -q "fontem-consolidator:v" infra/shared.yaml
-          # 1) chart-app values source
           sed -i 's/version: ".*"/version: "'"$TAG"'"/' shared/fontem-consolidator.yaml
-          # 2) literal image tags in the infra-shared app (all 3 consolidator
-          #    deployments: fontem-consolidator, consolidator-trigger/-sweeper)
-          sed -i -E "s|(fontem-consolidator:)v[0-9a-f]+|\1${TAG}|g" infra/shared.yaml
           git config user.name "GMR CI"
           git config user.email "ci@void42.internal"
-          git add shared/fontem-consolidator.yaml infra/shared.yaml
+          git add shared/fontem-consolidator.yaml
           git diff --cached --quiet || git commit -m "ci: deploy fontem-consolidator $TAG to fontem-shared"
           git push origin main
