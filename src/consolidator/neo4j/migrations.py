@@ -17,6 +17,26 @@ INDEX_CYPHER = [
     ),
     "CREATE INDEX decisionlog_decided_at IF NOT EXISTS FOR (d:DecisionLog) ON (d.decided_at)",
     "CREATE INDEX decisionlog_rule IF NOT EXISTS FOR (d:DecisionLog) ON (d.rule_name)",
+    # audit.record_decision and audit.finish_run both look a run up by
+    # run_id, and record_decision runs once per decision — dozens of
+    # times per consolidated entity. Without this index that MATCH is a
+    # NodeByLabelScan: measured in prod at 4,775,388 nodes scanned,
+    # 9.55M db hits and 2.9s for a single-node lookup. At ~44 decisions
+    # per entity that is roughly two minutes of pure scanning per
+    # event, which is what capped the trigger at 0.06 events/sec.
+    #
+    # It also degrades without bound. Every consolidation writes another
+    # ConsolidationRun node, so the scan this index removes was getting
+    # slower with every run — the pipeline was throttling itself.
+    #
+    # Range index rather than a uniqueness constraint: run_id is a
+    # uuid4 and should be unique, but asserting that over 4.7M existing
+    # rows can fail the migration on legacy duplicates, and the point
+    # lookup is what actually matters here.
+    (
+        "CREATE INDEX consolidationrun_run_id IF NOT EXISTS "
+        "FOR (r:ConsolidationRun) ON (r.run_id)"
+    ),
     (
         "CREATE INDEX consolidationrun_started IF NOT EXISTS "
         "FOR (r:ConsolidationRun) ON (r.started_at)"
