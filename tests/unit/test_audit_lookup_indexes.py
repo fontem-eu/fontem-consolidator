@@ -11,6 +11,7 @@ is correct, the results are right, and the pipeline just gets slower
 every day as the scanned label grows. This test pins the index so the
 regression cannot come back silently.
 """
+import pathlib
 import re
 
 from src.consolidator.neo4j.migrations import INDEX_CYPHER
@@ -40,8 +41,6 @@ def test_consolidation_run_id_is_indexed():
 def test_audit_lookup_properties_are_all_indexed():
     """Guards the whole audit chain, not just today's offender —
     a new MATCH-by-id in audit.py should fail here, not in prod."""
-    import pathlib
-
     audit_src = pathlib.Path("src/consolidator/audit.py").read_text(encoding="utf-8")
     looked_up = set(re.findall(r"MATCH \(\w+:(\w+) \{(\w+):", audit_src))
     indexed = _indexed_properties()
