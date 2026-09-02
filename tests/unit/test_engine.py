@@ -73,7 +73,7 @@ async def test_engine_promotes_flag_to_merge_above_threshold():
     rule = _FakeRuleWithThreshold(conf=0.97, conflict=False)
     captured_action = []
 
-    async def _capture(_driver, _database, *, decision, entity, candidate):
+    async def _capture(_driver, _database, *, decision, entity, candidate, **_):
         del entity, candidate  # unused
         captured_action.append(decision.action)
         return "auto_merge"
@@ -102,7 +102,7 @@ async def test_engine_does_not_promote_below_threshold():
     rule = _FakeRuleWithThreshold(conf=0.94, conflict=False)  # below 0.95
     captured_action = []
 
-    async def _capture(_driver, _database, *, decision, entity, candidate):
+    async def _capture(_driver, _database, *, decision, entity, candidate, **_):
         del entity, candidate
         captured_action.append(decision.action)
         return "flag"
@@ -132,7 +132,7 @@ async def test_engine_does_not_promote_when_conflict_set():
     rule = _FakeRuleWithThreshold(conf=1.0, conflict=True)  # conflict overrides
     captured_action = []
 
-    async def _capture(_driver, _database, *, decision, entity, candidate):
+    async def _capture(_driver, _database, *, decision, entity, candidate, **_):
         del entity, candidate
         captured_action.append(decision.action)
         return "flag"
@@ -306,7 +306,7 @@ def _patch_engine_deps(rules, run_id, capture_fn):
 async def _run_with_mode(rules, run_id, mode):
     fired: list[str] = []
 
-    async def _capture(_d, _db, *, decision, entity, candidate):
+    async def _capture(_d, _db, *, decision, entity, candidate, **_):
         del entity, candidate
         fired.append(decision.rule_name)
         return decision.action

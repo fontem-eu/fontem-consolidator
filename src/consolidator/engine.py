@@ -8,7 +8,7 @@ from neo4j import AsyncDriver
 from prometheus_client import Counter
 
 from src.config import settings
-from src.consolidator import actions, audit, entities
+from src.consolidator import actions, audit, entities, eventlog
 from src.consolidator.rules.base import Decision
 from src.consolidator.rules.registry import list_rules
 
@@ -94,6 +94,11 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
         )
 
     decisions_recorded: list[dict] = []
+    # AssertSameAs events for this run, written as one transaction at the
+    # end rather than one per decision. See eventlog.emit_assert_same_as_many
+    # for why that is safe: the trigger holds its offset until this whole
+    # request returns, so a crash before the flush is redelivered and redone.
+    pending_events: list[dict] = []
     rules_fired = 0
     handled_targets: set[str] = set()
 
@@ -185,7 +190,8 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
                 )
 
             outcome = await actions.execute(
-                driver, database, decision=decision, entity=entity, candidate=candidate
+                driver, database, decision=decision, entity=entity,
+                candidate=candidate, collect=pending_events,
             )
             await audit.record_decision(
                 driver,
@@ -219,6 +225,17 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             # Enrichment never participates in the short-circuit: it's
             # orthogonal to matching — a merged pair can still want
             # translations filled in.
+
+    # Flush the run's events in one transaction. Deliberately before the
+    # summary/return so a failure here is still inside the request the
+    # trigger is waiting on, and so the log line below reports what was
+    # actually written.
+    emitted = await eventlog.emit_assert_same_as_many(pending_events)
+    if pending_events and emitted != len(pending_events):
+        logger.warning(
+            "consolidator: run {run} emitted {got}/{want} AssertSameAs events",
+            run=run_id, got=emitted, want=len(pending_events),
+        )
 
     summary_outcome = _summarize(decisions_recorded)
     await audit.end_run(

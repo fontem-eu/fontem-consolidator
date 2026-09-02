@@ -137,3 +137,64 @@ async def emit_assert_same_as(  # pylint: disable=too-many-arguments
             seq=seq, a=a_iri, b=b_iri,
         )
     return seq
+
+
+def _emit_many_sync(rows: list[dict], producer: str) -> int:
+    """Insert every collected event inside ONE transaction."""
+    log = _get_log()
+    if log is None:
+        return 0
+    batch_id = uuid.uuid4()
+    with log.batch(batch_id, producer=producer) as emit:
+        for r in rows:
+            emit.upsert(
+                r["event_type"],
+                iri=r["iri"],
+                domain=r["domain"],
+                payload=r["payload"],
+            )
+    return len(rows)
+
+
+async def emit_assert_same_as_many(
+    rows: list[dict],
+    producer: str = "fontem-consolidator",
+) -> int:
+    """Emit a consolidation run's AssertSameAs events in one batch.
+
+    One transaction per RUN rather than per decision. The consolidator
+    produces 4.5 decisions per consolidation on average and up to 167,
+    and EventLog.batch() serialises on a single connection, so emitting
+    one at a time made that lock the bottleneck — prod throughput fell
+    from 14.5 to ~2.5 events/sec when per-decision emission was turned
+    on, a 4.5x drop against a 4.5x rise in transactions.
+
+    Crash safety, which is the reason this can be batched at all:
+    the whole consolidation runs inside the trigger's HTTP request, and
+    the trigger only advances its offset once that request returns.
+    _dispatch calls raise_for_status(), so a consolidator that dies
+    mid-run fails the request, the offset is not committed, and the
+    event is redelivered. Consolidation is MERGE-based and idempotent,
+    so the redo re-derives the same decisions and emits them again.
+    A crash therefore costs a repeat, not a lost event.
+
+    What that does leave is a window where Neo4j holds edges the event
+    log has not seen yet — the Neo4j writes land per decision, the
+    events land at the end. That window closes on the retry. It is the
+    same direction of skew the previous code had (Neo4j first, event
+    second), just wider, and it never resolves to permanent loss.
+
+    Failures are logged, not raised: the Neo4j write is the immediate
+    source of truth and a flaky event store must not abort
+    consolidation. Returns the number of events written.
+    """
+    if not rows:
+        return 0
+    try:
+        return await asyncio.to_thread(_emit_many_sync, rows, producer)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "eventlog: batched AssertSameAs emit failed ({n} events)",
+            n=len(rows),
+        )
+        return 0
