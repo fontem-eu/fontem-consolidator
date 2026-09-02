@@ -85,7 +85,8 @@ def test_whole_run_is_one_transaction(monkeypatch):
 
             return _cm()
 
-    monkeypatch.setattr(eventlog, "_get_log", lambda: _Log())
+    log = _Log()
+    monkeypatch.setattr(eventlog, "_get_log", lambda: log)
     rows = [
         {"event_type": "AssertSameAs", "iri": f"http://x/{i}",
          "domain": "company", "payload": {}}

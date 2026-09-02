@@ -57,7 +57,10 @@ def _now() -> str:
 
 
 
-async def execute(
+# Six kwargs: the five-arg executor dispatch contract plus the optional
+# emit collector. Bundling them into an object would hide the contract
+# every action handler is written against.
+async def execute(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
