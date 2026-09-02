@@ -1,3 +1,8 @@
 version: "latest"
 replicas: 1
+# Emit AssertSameAs events into events.entity_events. Off by default:
+# see the note in templates/deployment.yaml for why this is staged rather
+# than simply on. Turn on in fontem-shared first, then prod.
+eventEmitEnabled: false
+
 autoMergeEnabled: "false"
