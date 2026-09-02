@@ -57,15 +57,27 @@ def _now() -> str:
 
 
 
-async def execute(
+# Six kwargs: the five-arg executor dispatch contract plus the optional
+# emit collector. Bundling them into an object would hide the contract
+# every action handler is written against.
+async def execute(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
     decision: Decision,
     entity: Entity,
     candidate: Candidate,
+    collect: list[dict] | None = None,
 ) -> str:
     """Dispatch to the right executor.
+
+    ``collect`` batches the AssertSameAs emits: when a list is passed the
+    event is appended rather than written, and the caller emits the whole
+    run in one transaction (see eventlog.emit_assert_same_as_many). One
+    transaction per run instead of per decision — the difference between
+    14.5 and ~2.5 consolidations/sec in prod. Omit it and each event is
+    written immediately, which is what the sweeper and any other caller
+    outside a retryable request should do.
 
     Returns the decision_type actually applied (may differ from decision.action
     when auto_merge is disabled or a conflict is detected).
@@ -78,10 +90,10 @@ async def execute(
         forced = bool(decision.details.get("force_auto_merge"))
         if not settings.auto_merge_enabled and not forced:
             await _flag_same_as(driver, database, decision=decision, reviewed=False)
-            await _emit_same_as_event(decision)
+            await _emit_same_as_event(decision, collect)
             return "flag"
         await _merge(driver, database, decision=decision, entity=entity, candidate=candidate)
-        await _emit_same_as_event(decision)
+        await _emit_same_as_event(decision, collect)
         return "auto_merge"
 
     if decision.action == "link":
@@ -94,7 +106,7 @@ async def execute(
         await _flag_same_as(
             driver, database, decision=decision, reviewed=False, conflict=conflict
         )
-        await _emit_same_as_event(decision)
+        await _emit_same_as_event(decision, collect)
         return "conflict" if conflict else "flag"
 
     if decision.action == "enrich":
@@ -104,13 +116,29 @@ async def execute(
     return "noop"
 
 
-async def _emit_same_as_event(decision: Decision) -> None:
-    """Emit an AssertSameAs event so Virtuoso (and replay-from-zero
-    of Neo4j) see the equivalence. Failures are absorbed in the
-    eventlog shim — the consolidator's Neo4j write above is the
-    immediate source of truth."""
+async def _emit_same_as_event(
+    decision: Decision, collect: list[dict] | None = None,
+) -> None:
+    """Emit an AssertSameAs event so Virtuoso (and replay-from-zero of
+    Neo4j) see the equivalence.
+
+    With ``collect`` the event is queued for the caller to write as one
+    batch at the end of the run; without it, it is written immediately.
+    Either way failures are absorbed in the eventlog shim — the Neo4j
+    write above is the immediate source of truth and a flaky event store
+    must not abort consolidation."""
     a_iri = _entity_iri(decision.entity_type, decision.source_id)
     b_iri = _entity_iri(decision.entity_type, decision.target_id)
+    if collect is not None:
+        collect.append({
+            "a_iri": a_iri,
+            "b_iri": b_iri,
+            "confidence": float(decision.confidence),
+            "method": decision.rule_name,
+            "rule": decision.rule_name,
+            "domain": decision.entity_type.lower(),
+        })
+        return
     await eventlog.emit_assert_same_as(
         a_iri=a_iri,
         b_iri=b_iri,

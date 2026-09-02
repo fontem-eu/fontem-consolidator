@@ -8,7 +8,7 @@ from neo4j import AsyncDriver
 from prometheus_client import Counter
 
 from src.config import settings
-from src.consolidator import actions, audit, entities
+from src.consolidator import actions, audit, entities, eventlog
 from src.consolidator.rules.base import Decision
 from src.consolidator.rules.registry import list_rules
 
@@ -39,6 +39,53 @@ class ConsolidationResult:
 # Splitting it makes the control flow harder to follow than keeping
 # it as one linear function; the kwargs map 1:1 to the public API
 # surface (consolidator dispatch route + trigger consumer).
+async def _finish_run(  # pylint: disable=too-many-arguments
+    driver: AsyncDriver,
+    database: str,
+    *,
+    run_id: str,
+    rules_fired: int,
+    decisions_recorded: list[dict],
+    pending_events: list[dict],
+) -> str:
+    """Close out a run: flush its events, then record the audit row.
+
+    The flush happens here — before the run returns — so a failure is
+    still inside the HTTP request the trigger is waiting on. That is what
+    makes batching safe: a crash before this point fails the dispatch, the
+    trigger does not advance its offset, and the whole consolidation is
+    redelivered and redone.
+    """
+    await _flush_pending_events(run_id, pending_events)
+    summary_outcome = _summarize(decisions_recorded)
+    await audit.end_run(
+        driver,
+        database,
+        run_id=run_id,
+        rules_fired=rules_fired,
+        decisions=len(decisions_recorded),
+        outcome=summary_outcome,
+    )
+    return summary_outcome
+
+
+async def _flush_pending_events(run_id: str, pending: list[dict]) -> None:
+    """Write the run's AssertSameAs events as one transaction.
+
+    Called before the run returns, so a failure here is still inside the
+    HTTP request the trigger is waiting on — which is what makes the batch
+    safe: a crash before this point fails the dispatch, the trigger does
+    not advance its offset, and the whole consolidation is redelivered and
+    redone. See eventlog.emit_assert_same_as_many.
+    """
+    emitted = await eventlog.emit_assert_same_as_many(pending)
+    if pending and emitted != len(pending):
+        logger.warning(
+            "consolidator: run {run} emitted {got}/{want} AssertSameAs events",
+            run=run_id, got=emitted, want=len(pending),
+        )
+
+
 async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
     driver: AsyncDriver,
     database: str,
@@ -93,7 +140,15 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             run_id=run_id, entity_type=entity_type, entity_id=entity_id, decisions=[], rules_fired=0
         )
 
+
+    # AssertSameAs events for this run, written as one transaction at the
+    # end rather than one per decision. See eventlog.emit_assert_same_as_many
+    # for why that is safe: the trigger holds its offset until this whole
+    # request returns, so a crash before the flush is redelivered and redone.
+    # Both accumulate for the lifetime of this run and are consumed
+    # together at the end: one is audited, the other emitted.
     decisions_recorded: list[dict] = []
+    pending_events: list[dict] = []
     rules_fired = 0
     handled_targets: set[str] = set()
 
@@ -185,7 +240,8 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
                 )
 
             outcome = await actions.execute(
-                driver, database, decision=decision, entity=entity, candidate=candidate
+                driver, database, decision=decision, entity=entity,
+                candidate=candidate, collect=pending_events,
             )
             await audit.record_decision(
                 driver,
@@ -220,14 +276,9 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             # orthogonal to matching — a merged pair can still want
             # translations filled in.
 
-    summary_outcome = _summarize(decisions_recorded)
-    await audit.end_run(
-        driver,
-        database,
-        run_id=run_id,
-        rules_fired=rules_fired,
-        decisions=len(decisions_recorded),
-        outcome=summary_outcome,
+    summary_outcome = await _finish_run(
+        driver, database, run_id=run_id, rules_fired=rules_fired,
+        decisions_recorded=decisions_recorded, pending_events=pending_events,
     )
 
     logger.info(
