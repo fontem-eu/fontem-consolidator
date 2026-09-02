@@ -73,6 +73,15 @@ spec:
                 secretKeyRef:
                   name: neo4j-credentials
                   key: NEO4J_PASSWORD
+            # The sweeper drives the same engine.consolidate() as the API
+            # pod, so it produces the same AssertSameAs events and needs the
+            # same connection to emit them. Without it the sweep's decisions
+            # are written to Neo4j and nowhere else.
+            - name: EVENTS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: fontem-postgres-credentials
+                  key: EVENTS_DATABASE_URL
             # Mirror the API pod's auto-merge gate so the sweep applies the
             # same policy (prod = flag-only). match_only still skips enrich.
             - name: CONSOLIDATOR_AUTO_MERGE_ENABLED
