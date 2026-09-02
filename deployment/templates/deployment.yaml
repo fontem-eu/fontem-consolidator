@@ -88,6 +88,28 @@ spec:
                 secretKeyRef:
                   name: neo4j-credentials
                   key: NEO4J_PASSWORD
+            {{- if .Values.eventEmitEnabled }}
+            # Emits AssertSameAs into events.entity_events — the only route
+            # SAME_AS decisions have to the virtuoso sink, and what makes
+            # consolidation output replayable.
+            #
+            # Gated because enabling it took prod's Postgres down on
+            # 2026-09-02: EventLog holds one connection, this pod emits
+            # through asyncio.to_thread, and psycopg's transaction() is not
+            # re-entrant across threads on a shared connection — concurrent
+            # entries became orphaned SAVEPOINTs whose ExclusiveLocks were
+            # never released, filling the lock table. Fixed in
+            # fontem-events 0.5.1 by serialising batch().
+            #
+            # The flag exists so the fix can be soaked in fontem-shared
+            # before prod turns it on; the two environments share this chart
+            # and would otherwise move together.
+            - name: EVENTS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: fontem-postgres-credentials
+                  key: EVENTS_DATABASE_URL
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
