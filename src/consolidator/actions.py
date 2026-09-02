@@ -169,9 +169,17 @@ async def _merge(  # pylint: disable=unused-argument
               SET canonical.historic_leis = coalesce(canonical.historic_leis, []) + lei
             )
             WITH canonical, dup
+              // produceSelfRel:false — without it, merging two nodes turns the
+              // SAME_AS edge BETWEEN them into a self-loop on the survivor.
+              // Verified against prod APOC: identical merge yields 1 self-loop
+              // with the default and 0 with this flag. 571 such edges had
+              // accumulated, which is what refs.sameas_no_selfloop was failing
+              // on — a node is not a duplicate of itself, and the edge asserts
+              // it is.
             CALL apoc.refactor.mergeNodes([canonical, dup], {{
               properties: "discard",
-              mergeRels: true
+              mergeRels: true,
+              produceSelfRel: false
             }}) YIELD node
             WITH node
             CREATE (e:MergeEvent {{

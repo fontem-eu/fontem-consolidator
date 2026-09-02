@@ -140,6 +140,26 @@ BACKFILL_CYPHER = [
         SET a.name_clean = apoc.text.clean(a.name)
     } IN TRANSACTIONS OF 5000 ROWS
     """,
+    # Sweep up SAME_AS self-loops left behind by merges that ran before
+    # produceSelfRel:false was set on apoc.refactor.mergeNodes. Merging a
+    # duplicate into its canonical turned the SAME_AS edge BETWEEN the pair
+    # into a self-loop on the survivor, and 571 had accumulated by
+    # 2026-09-02 — the standing refs.sameas_no_selfloop block-tier failure.
+    #
+    # Safe to delete outright rather than review: the edge asserts a node is
+    # the same entity as itself, which is true but carries no information,
+    # and it corrupts every consumer that walks SAME_AS to build clusters.
+    # Nothing is lost — the merge it came from is already recorded as a
+    # :MergeEvent.
+    #
+    # Idempotent and cheap once drained: with the flag set, no new ones
+    # appear and this matches nothing on subsequent runs.
+    """
+    MATCH (a)-[r:SAME_AS]->(a)
+    CALL (r) {
+        DELETE r
+    } IN TRANSACTIONS OF 1000 ROWS
+    """,
 ]
 
 
