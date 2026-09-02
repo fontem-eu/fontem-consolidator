@@ -171,9 +171,14 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
                 f"""
                 MATCH (canonical:{label} {{{id_key}: $from}})
                 MATCH (dup:{label} {{{id_key}: $to}})
+                // Same reason as actions._merge: without produceSelfRel the
+                // SAME_AS edge between the pair survives as a self-loop on the
+                // merged node. The manual-review path merges the same way the
+                // automatic one does, so it needs the same flag.
                 CALL apoc.refactor.mergeNodes([canonical, dup], {{
                   properties: "discard",
-                  mergeRels: true
+                  mergeRels: true,
+                  produceSelfRel: false
                 }}) YIELD node
                 WITH node
                 CREATE (e:MergeEvent {{
