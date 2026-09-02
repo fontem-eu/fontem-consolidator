@@ -88,6 +88,19 @@ spec:
                 secretKeyRef:
                   name: neo4j-credentials
                   key: NEO4J_PASSWORD
+            # Without this, eventlog._get_log() logs "EVENTS_DATABASE_URL
+            # unset, emit will no-op" and every AssertSameAs the engine
+            # produces is silently dropped. events.entity_events has never
+            # held a single one, so no SAME_AS decision has ever reached the
+            # virtuoso sink, and consolidation output cannot be replayed the
+            # way every other producer's can — the graph is the only copy.
+            # The trigger next door already reads the same key from the same
+            # secret; the consolidator was simply never given it.
+            - name: EVENTS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: fontem-postgres-credentials
+                  key: EVENTS_DATABASE_URL
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
