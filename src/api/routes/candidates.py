@@ -7,6 +7,8 @@ from pydantic import BaseModel
 
 from src.api.lang import apply_translation, safe_lang
 from src.config import settings
+from src.consolidator import eventlog
+from src.consolidator.actions import entity_iri
 from src.consolidator.neo4j.client import get_driver
 
 router = APIRouter()
@@ -70,6 +72,9 @@ async def list_candidates(
               coalesce(r.detection_confidences, [r.confidence])  AS det_confs,
               coalesce(r.detection_dates,       [r.detected_at]) AS det_dates,
               coalesce(r.conflict, false) AS conflict,
+              r.conflict_property AS conflict_property,
+              r.conflict_left AS conflict_left,
+              r.conflict_right AS conflict_right,
               labels(a) AS a_labels, a {{.*}} AS a_props,
               labels(b) AS b_labels, b {{.*}} AS b_props
             ORDER BY r.detected_at DESC
@@ -108,6 +113,11 @@ async def list_candidates(
                 "detected_at": _iso(rec["detected_at"]),
                 "detections": detections,
                 "conflict": rec["conflict"],
+                # Why the pair is contested, not merely that it is: which
+                # identifier disagreed and the two canonical values.
+                "conflict_property": rec["conflict_property"],
+                "conflict_left": rec["conflict_left"],
+                "conflict_right": rec["conflict_right"],
                 "source_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
                                   for k, v in apply_translation(rec["a_props"], effective_lang).items()},
                 "target_entity": {k: _iso(v) if hasattr(v, "iso_format") else v
@@ -128,6 +138,7 @@ class DecideBody(BaseModel):
 @router.post("/candidates/{from_id}/{to_id}/decide")
 async def decide(from_id: str, to_id: str, body: DecideBody):
     driver = await get_driver()
+    event_seq: int | None = None
     async with driver.session(database=settings.neo4j_database) as session:
         # Find the SAME_AS between these two nodes regardless of direction
         result = await session.run(
@@ -149,21 +160,62 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
         confidence = rec["r"].get("confidence", 0.0)
 
         if body.decision == "reject":
+            # Deleting the :SAME_AS is not enough — the next sweep re-runs the
+            # same rules and MERGEs it straight back, so a rejected pair would
+            # reappear in the queue forever. The :NOT_SAME_AS edge is the
+            # durable record of the reviewer's veto; actions._flag_same_as and
+            # actions._merge both refuse to act on a pair that carries one.
             await session.run(
                 f"""
-                MATCH (a:{label} {{{id_key}: $from}})-[r:SAME_AS]-(b:{label} {{{id_key}: $to}})
+                MATCH (a:{label} {{{id_key}: $from}})
+                MATCH (b:{label} {{{id_key}: $to}})
+                OPTIONAL MATCH (a)-[r:SAME_AS]-(b)
                 DELETE r
+                MERGE (a)-[n:NOT_SAME_AS]->(b)
+                SET n.decided_at = $now,
+                    n.reviewer = $reviewer,
+                    n.note = $note,
+                    n.decision = 'reject',
+                    n.method_at_review = $rule_name,
+                    n.confidence_at_review = $confidence
                 """,
-                **{"from": from_id, "to": to_id},
+                **{
+                    "from": from_id, "to": to_id, "now": _now(),
+                    "reviewer": body.reviewer, "note": body.note,
+                    "rule_name": rule_name, "confidence": confidence,
+                },
             )
             decision_type = "manual_reject"
         elif body.decision == "keep_as_related":
+            # "Keep as related" means NOT the same entity but connected. It used
+            # to set reviewed=true on the :SAME_AS edge and leave it there,
+            # which was actively dangerous: gds/wcc_collapse projects exactly
+            # `reviewed=true AND conflict=false` SAME_AS edges and merges the
+            # component with force_auto_merge — so answering "these are merely
+            # related" would have deleted one of the two nodes. Move the pair
+            # onto :RELATED_TO and record the same-entity veto.
             await session.run(
                 f"""
-                MATCH (a:{label} {{{id_key}: $from}})-[r:SAME_AS]-(b:{label} {{{id_key}: $to}})
-                SET r.reviewed = true, r.reviewed_at = $now, r.reviewer = $reviewer
+                MATCH (a:{label} {{{id_key}: $from}})
+                MATCH (b:{label} {{{id_key}: $to}})
+                OPTIONAL MATCH (a)-[r:SAME_AS]-(b)
+                DELETE r
+                MERGE (a)-[rel:RELATED_TO]->(b)
+                SET rel.reviewed = true, rel.reviewed_at = $now,
+                    rel.reviewer = $reviewer, rel.source = 'manual_review'
+                MERGE (a)-[n:NOT_SAME_AS]->(b)
+                SET n.decided_at = $now,
+                    n.reviewer = $reviewer,
+                    n.note = $note,
+                    n.decision = 'keep_as_related',
+                    n.method_at_review = $rule_name,
+                    n.confidence_at_review = $confidence
                 """,
-                **{"from": from_id, "to": to_id, "now": _now(), "reviewer": body.reviewer},
+                **{
+                    "from": from_id, "to": to_id, "now": _now(),
+                    "reviewer": body.reviewer, "note": body.note,
+                    "rule_name": rule_name, "confidence": confidence,
+                },
             )
             decision_type = "manual_keep_related"
         else:  # merge
@@ -198,6 +250,22 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
             )
             decision_type = "manual_merge"
 
+            # The reviewer approved the equivalence — this is the second of the
+            # two routes allowed to assert owl:sameAs (see actions.py's
+            # emission contract). The duplicate node is gone after the merge
+            # above, so without this event its IRI would dangle in Virtuoso.
+            # emit_assert_same_as absorbs its own failures and returns None;
+            # surface that in the response rather than silently reporting
+            # success, because a lost approval is invisible otherwise.
+            event_seq = await eventlog.emit_assert_same_as(
+                a_iri=entity_iri(label, from_id),
+                b_iri=entity_iri(label, to_id),
+                confidence=float(confidence or 1.0),
+                method=rule_name,
+                rule=rule_name,
+                domain=label.lower(),
+            )
+
         # Log the manual decision
         await session.run(
             """
@@ -226,4 +294,11 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
             note=body.note,
         )
 
-    return {"outcome": decision_type, "rule_name": rule_name}
+    return {
+        "outcome": decision_type,
+        "rule_name": rule_name,
+        # None on a merge means the owl:sameAs assertion did NOT reach the
+        # event log; the graph merge still happened. Operators need to see it.
+        "event_seq": event_seq,
+        "projected": decision_type != "manual_merge" or event_seq is not None,
+    }

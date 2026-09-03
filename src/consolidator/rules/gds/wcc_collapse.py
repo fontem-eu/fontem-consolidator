@@ -4,6 +4,20 @@ After humans confirm fuzzy matches by setting `:SAME_AS {reviewed: true}`, the
 graph has clusters of equivalent nodes. This rule walks that subgraph, picks a
 canonical per cluster, and merges the rest.
 
+CURRENTLY INERT — and deliberately so. No code path leaves a `:SAME_AS`
+edge with `reviewed: true` any more. A reviewer's "merge" collapses the
+pair immediately in `api/routes/candidates.decide`, which also makes
+this rule redundant: transitivity falls out of merging A into B and then
+B into C. "Keep as related" used to set `reviewed: true` here, which was
+a latent node-deleting bug — it means "NOT the same entity", yet it fed
+exactly the `reviewed=true AND conflict=false` projection below, whose
+`force_auto_merge` would have deleted one of the two nodes. It now
+writes `:RELATED_TO` + `:NOT_SAME_AS` instead.
+
+Kept rather than deleted because the projection is the natural place to
+do a batch cluster collapse if bulk approval is ever added. If you make
+`reviewed: true` reachable again, re-read that paragraph first.
+
 Canonical selection order (stable):
   1. Has an LEI (for Company) / has an authority_id (for Authority — always true, so moot)
   2. Oldest `created_at`

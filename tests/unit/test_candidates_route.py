@@ -64,6 +64,12 @@ def test_list_candidates_returns_shape(client):
                     "det_confs": [0.94, 0.87],
                     "det_dates": ["2026-04-20T12:00:00Z", "2026-04-20T12:05:00Z"],
                     "conflict": False,
+                    # Why a pair is contested, not just that it is. The
+                    # route surfaces these so a reviewer can see which
+                    # identifier disagreed.
+                    "conflict_property": None,
+                    "conflict_left": None,
+                    "conflict_right": None,
                     "a_labels": ["Company"],
                     "a_props": {"gmr_id": "gmr-A", "name": "Acme"},
                     "b_labels": ["Company"],
@@ -107,6 +113,12 @@ def test_list_candidates_back_fills_detections_for_legacy_edges(client):
                     "det_confs": [0.92],
                     "det_dates": ["2026-04-15T08:00:00Z"],
                     "conflict": False,
+                    # Why a pair is contested, not just that it is. The
+                    # route surfaces these so a reviewer can see which
+                    # identifier disagreed.
+                    "conflict_property": None,
+                    "conflict_left": None,
+                    "conflict_right": None,
                     "a_labels": ["Authority"],
                     "a_props": {"authority_id": "AUTH-A", "name": "X"},
                     "b_labels": ["Authority"],

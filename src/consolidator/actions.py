@@ -11,12 +11,29 @@ decision whose details carry `force_auto_merge: True` (stamped by the engine
 when the firing rule sets `Rule.force_auto_merge = True`) bypasses the global
 gate. Reserved for deterministic identifier matches — see `rules/base.py`.
 
-Event-log emission: every match (flag, conflict, merge) ALSO emits an
-``AssertSameAs`` event into ``events.entity_events`` so the Virtuoso
-sink can project ``owl:sameAs``. The Neo4j-direct write here remains
-the source of truth for the rich detection-arrays metadata used by
-the review queue; a follow-up will move that projection into the
-Neo4j sink and let this module emit-only. See CONSOLIDATOR-TRIGGER.md.
+Emission contract — ``owl:sameAs`` is an APPROVED equivalence only
+------------------------------------------------------------------
+An ``AssertSameAs`` event is emitted into ``events.entity_events``
+(whence the Virtuoso sink projects ``owl:sameAs``) if and only if the
+equivalence has been *approved*, by one of exactly two routes:
+
+  1. **auto-merge** — the pair collapsed into one node here, either
+     because ``settings.auto_merge_enabled`` is on or because the
+     firing rule set ``force_auto_merge`` (deterministic identifier
+     matches only). The duplicate's IRI must keep resolving to the
+     survivor, which is precisely what ``owl:sameAs`` is for.
+  2. **human review** — a reviewer chose "merge" in the queue; the
+     emit happens there, in ``api/routes/candidates.decide``.
+
+A ``flag`` or ``conflict`` outcome writes the ``:SAME_AS`` edge with
+``reviewed:false`` as a *review candidate* and emits NOTHING. Those
+edges are a work queue, not an assertion about the world.
+
+This gate exists because it was measured absent: emitting on flag put
+1.34M unreviewed pairs into the graph, of which the objectively
+checkable subset was ~99% wrong (differing national registration
+numbers, different cities). ``:SAME_AS {reviewed:false}`` is a
+hypothesis; ``owl:sameAs`` is a claim. Only the second gets published.
 """
 
 from datetime import datetime, timezone
@@ -46,7 +63,12 @@ def _id_key(label: str) -> str:
     return _ID_KEY_BY_LABEL.get(label, "authority_id")
 
 
-def _entity_iri(entity_type: str, entity_id: str) -> str:
+def entity_iri(entity_type: str, entity_id: str) -> str:
+    """Stable IRI for an entity, matching the sinks' minting scheme.
+
+    Public because the manual-review endpoint emits AssertSameAs for
+    reviewer-approved merges and must mint identical IRIs.
+    """
     label = _IRI_LABEL_BY_TYPE.get(entity_type, entity_type)
     return f"http://data.fontem.eu/id/{label}/{entity_id}"
 
@@ -55,12 +77,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _scalar(value: object) -> str | None:
+    """Neo4j relationship properties hold primitives only; conflict values
+    arrive as canonicalised identifier strings but are typed `object`."""
+    return None if value is None else str(value)
+
+
 
 
 # Six kwargs: the five-arg executor dispatch contract plus the optional
 # emit collector. Bundling them into an object would hide the contract
 # every action handler is written against.
-async def execute(  # pylint: disable=too-many-arguments
+#
+# The return count is the dispatch table itself — one arm per action, plus
+# the "the write didn't happen" arm each graph-mutating arm needs so the
+# caller never publishes an assertion for a write a reviewer vetoed.
+# Collapsing them behind a result variable would hide exactly the mapping
+# this function exists to express.
+async def execute(  # pylint: disable=too-many-arguments,too-many-return-statements
     driver: AsyncDriver,
     database: str,
     *,
@@ -89,10 +123,17 @@ async def execute(  # pylint: disable=too-many-arguments
         # See rules/base.py:Rule.force_auto_merge.
         forced = bool(decision.details.get("force_auto_merge"))
         if not settings.auto_merge_enabled and not forced:
-            await _flag_same_as(driver, database, decision=decision, reviewed=False)
-            await _emit_same_as_event(decision, collect)
-            return "flag"
-        await _merge(driver, database, decision=decision, entity=entity, candidate=candidate)
+            # Downgraded to a review candidate — NOT an approved equivalence,
+            # so nothing is projected. See the emission contract above.
+            flagged = await _flag_same_as(
+                driver, database, decision=decision, reviewed=False
+            )
+            return "flag" if flagged else "noop"
+        merged = await _merge(
+            driver, database, decision=decision, entity=entity, candidate=candidate
+        )
+        if not merged:
+            return "noop"
         await _emit_same_as_event(decision, collect)
         return "auto_merge"
 
@@ -103,10 +144,11 @@ async def execute(  # pylint: disable=too-many-arguments
 
     if decision.action == "flag":
         conflict = bool(decision.details.get("conflict", False))
-        await _flag_same_as(
+        flagged = await _flag_same_as(
             driver, database, decision=decision, reviewed=False, conflict=conflict
         )
-        await _emit_same_as_event(decision, collect)
+        if not flagged:
+            return "noop"
         return "conflict" if conflict else "flag"
 
     if decision.action == "enrich":
@@ -127,8 +169,8 @@ async def _emit_same_as_event(
     Either way failures are absorbed in the eventlog shim — the Neo4j
     write above is the immediate source of truth and a flaky event store
     must not abort consolidation."""
-    a_iri = _entity_iri(decision.entity_type, decision.source_id)
-    b_iri = _entity_iri(decision.entity_type, decision.target_id)
+    a_iri = entity_iri(decision.entity_type, decision.source_id)
+    b_iri = entity_iri(decision.entity_type, decision.target_id)
     if collect is not None:
         collect.append({
             "a_iri": a_iri,
@@ -160,9 +202,14 @@ async def _merge(  # pylint: disable=unused-argument
     decision: Decision,
     entity: Entity,
     candidate: Candidate,
-) -> None:
+) -> bool:
     """Collapse candidate into entity. Rewrites candidate's edges to entity, then deletes candidate.
     Writes a :MergeEvent audit node. Idempotent: if candidate no longer exists, no-op.
+
+    Returns True when the nodes were actually collapsed. False means the
+    merge did not happen — either a node was already gone, or a reviewer
+    has recorded :NOT_SAME_AS for the pair. The caller must not emit an
+    ``owl:sameAs`` assertion for a merge that did not occur.
     """
     label = decision.entity_type
     id_key = _id_key(label)
@@ -180,7 +227,7 @@ async def _merge(  # pylint: disable=unused-argument
         )
         record = await result.single()
         if record is None:
-            return  # one or both nodes gone — nothing to merge
+            return False  # one or both nodes gone — nothing to merge
 
         # Successor-LEI merges preserve lineage: append the retired LEI to
         # `canonical.historic_leis` BEFORE the mergeNodes call swallows the
@@ -189,10 +236,14 @@ async def _merge(  # pylint: disable=unused-argument
         if decision.rule_name == "successor_lei_match":
             retired_lei = (decision.details or {}).get("retired_lei")
 
-        await session.run(
+        merge_result = await session.run(
             f"""
             MATCH (canonical:{label} {{{id_key}: $canonical_id}})
             MATCH (dup:{label} {{{id_key}: $dup_id}})
+            // A reviewer's "different entities" outranks any rule, including
+            // the deterministic ones. mergeNodes DELETES a node — there is no
+            // undo, so the human veto is checked on the irreversible path too.
+            WHERE NOT EXISTS {{ (canonical)-[:NOT_SAME_AS]-(dup) }}
             FOREACH (lei IN CASE WHEN $retired_lei IS NULL THEN [] ELSE [$retired_lei] END |
               SET canonical.historic_leis = coalesce(canonical.historic_leis, []) + lei
             )
@@ -227,12 +278,15 @@ async def _merge(  # pylint: disable=unused-argument
             entity_type=label,
             retired_lei=retired_lei,
         )
+        # No row means the :NOT_SAME_AS veto above blocked the merge.
+        merged = await merge_result.single() is not None
 
         # NOTE: the CLIENT_OF / SUPPLIER_OF trade-summary layer was
         # retired with the fontem-api materialiser (#222) — the graph
         # explorer traverses AWARDED / AWARDED_TO directly, so a merge
         # needs no summary-edge rebuild anymore. The old rebuild here
         # was quietly re-seeding a dead cache after every merge.
+        return merged
 
 
 async def _link(
@@ -267,8 +321,12 @@ async def _flag_same_as(
     decision: Decision,
     reviewed: bool,
     conflict: bool = False,
-) -> None:
+) -> bool:  # pylint: disable=too-many-locals
     """Append a detection to the :SAME_AS edge for human review.
+
+    Returns False when a reviewer's :NOT_SAME_AS veto blocked the write,
+    so the caller can record the outcome as a noop rather than claiming
+    a candidate was queued.
 
     Schema (Neo4j relationships only allow primitives + arrays of
     primitives, so the per-rule detection list is stored as three
@@ -281,14 +339,27 @@ async def _flag_same_as(
       r.detected_at           : detected_at at the max-confidence index
       r.reviewed              : sticky-once-true (human via /decide)
       r.conflict              : sticky-once-true (any rule reporting it)
+      r.conflict_property     : which identifier disagreed ("lei", "vat",
+                                "registered_as", ...) — set with the flag
+                                and never cleared, so the reviewer can see
+                                WHY a pair is contested instead of just THAT
+                                it is. Was silently dropped before, leaving
+                                every conflicted edge unexplained.
+      r.conflict_left/right   : the two canonical values that disagreed
     """
     label = decision.entity_type
     id_key = _id_key(label)
+    details = decision.details or {}
     async with driver.session(database=database) as session:
-        await session.run(
+        result = await session.run(
             f"""
             MATCH (a:{label} {{{id_key}: $source_id}})
             MATCH (b:{label} {{{id_key}: $target_id}})
+            // A reviewer has already ruled these two NOT the same. Without
+            // this guard the MERGE below silently re-opens every rejected
+            // pair on the next sweep, so the queue can never be drained.
+            // :NOT_SAME_AS is undirected in meaning — match either way.
+            WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
             MERGE (a)-[r:SAME_AS]->(b)
             // Indices of existing entries to KEEP (those that aren't
             // for the rule firing now — that one's about to be
@@ -307,7 +378,13 @@ async def _flag_same_as(
                   CASE WHEN coalesce(r.reviewed, false) THEN true
                        ELSE $reviewed END
                 ),
-                r.conflict = (coalesce(r.conflict, false) OR $conflict)
+                r.conflict = (coalesce(r.conflict, false) OR $conflict),
+                // Keep the first explanation recorded; don't let a later
+                // non-conflicting rule blank out why the pair is contested.
+                r.conflict_property =
+                  coalesce(r.conflict_property, $conflict_property),
+                r.conflict_left  = coalesce(r.conflict_left,  $conflict_left),
+                r.conflict_right = coalesce(r.conflict_right, $conflict_right)
             // Recompute summary fields from the full (post-update)
             // confidence list. The reduce() walks parallel arrays to
             // find the max-confidence index.
@@ -321,6 +398,7 @@ async def _flag_same_as(
             SET r.confidence  = r.detection_confidences[top_i],
                 r.method      = r.detection_rules[top_i],
                 r.detected_at = r.detection_dates[top_i]
+            RETURN 1 AS flagged
             """,
             source_id=decision.source_id,
             target_id=decision.target_id,
@@ -329,7 +407,11 @@ async def _flag_same_as(
             detected_at=_now(),
             reviewed=reviewed,
             conflict=conflict,
+            conflict_property=details.get("conflicting_property"),
+            conflict_left=_scalar(details.get("left")),
+            conflict_right=_scalar(details.get("right")),
         )
+        return await result.single() is not None
 
 
 async def _enrich(
