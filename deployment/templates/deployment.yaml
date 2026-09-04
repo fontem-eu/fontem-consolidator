@@ -22,7 +22,12 @@ metadata:
     chaos/eligible: "true"
     {{- end }}{{- end }}
 spec:
-  replicas: {{ .Values.replicas | default 1 }}
+  # hasKey, not `| default 1`. Helm's default treats 0 as empty, so
+  # `replicas: 0` rendered as 1 and the deployment stayed up while the
+  # values file said the tier was paused — fontem-shared ran this API
+  # for weeks believing it was scaled to zero. The sweeper and trigger
+  # templates already guard with hasKey; this one was the outlier.
+  replicas: {{ if hasKey .Values "replicas" }}{{ .Values.replicas }}{{ else }}1{{ end }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
