@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -32,7 +32,9 @@ def _iso(value: Any) -> str | None:
 async def list_candidates(
     response: Response,
     entity_type: str | None = Query(default=None),
-    status: str = Query(default="pending", pattern="^(pending|declined)$"),
+    status: Annotated[
+        str, Query(pattern="^(pending|declined)$"),
+    ] = "pending",
     limit: int = Query(default=50, le=500),
     cursor: str | None = Query(default=None),
     lang: str | None = Query(default=None),
@@ -158,7 +160,18 @@ class DecideBody(BaseModel):
         )
 
 
-@router.post("/candidates/{from_id}/{to_id}/decide")
+@router.post(
+    "/candidates/{from_id}/{to_id}/decide",
+    responses={
+        404: {"description": "No SAME_AS_CANDIDATE between these entities."},
+        409: {
+            "description": (
+                "The pair is already settled: the candidate was declined, or a "
+                ":NOT_SAME_AS correction blocks it from being asserted."
+            ),
+        },
+    },
+)
 async def decide(from_id: str, to_id: str, body: DecideBody):
     driver = await get_driver()
     event_seq: int | None = None
@@ -316,7 +329,17 @@ class CorrectBody(BaseModel):
     reviewer: str
 
 
-@router.post("/same-as/{from_id}/{to_id}/correct")
+@router.post(
+    "/same-as/{from_id}/{to_id}/correct",
+    responses={
+        404: {
+            "description": (
+                "No asserted :SAME_AS between these entities. A proposal that "
+                "was never approved is declined via /decide, not corrected."
+            ),
+        },
+    },
+)
 async def correct(from_id: str, to_id: str, body: CorrectBody):
     """Record a :NOT_SAME_AS correction against an asserted :SAME_AS.
 

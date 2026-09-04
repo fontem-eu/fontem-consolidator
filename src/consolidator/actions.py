@@ -94,12 +94,7 @@ def _scalar(value: object) -> str | None:
 # emit collector. Bundling them into an object would hide the contract
 # every action handler is written against.
 #
-# The return count is the dispatch table itself — one arm per action, plus
-# the "the write didn't happen" arm each graph-mutating arm needs so the
-# caller never publishes an assertion for a write a reviewer vetoed.
-# Collapsing them behind a result variable would hide exactly the mapping
-# this function exists to express.
-async def execute(  # pylint: disable=too-many-arguments,too-many-return-statements
+async def execute(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
@@ -122,25 +117,10 @@ async def execute(  # pylint: disable=too-many-arguments,too-many-return-stateme
     when auto_merge is disabled or a conflict is detected).
     """
     if decision.action == "merge":
-        # The per-rule force_auto_merge stamp lets deterministic rules
-        # (exact LEI/CIK/VAT/authority-id, SAME_AS cluster collapse,
-        # GLEIF successor) merge even when the global gate is OFF.
-        # See rules/base.py:Rule.force_auto_merge.
-        forced = bool(decision.details.get("force_auto_merge"))
-        if not settings.auto_merge_enabled and not forced:
-            # Downgraded to a review candidate — NOT an approved equivalence,
-            # so nothing is projected. See the emission contract above.
-            proposed = await _propose_candidate(
-                driver, database, decision=decision
-            )
-            return "flag" if proposed else "noop"
-        merged = await _merge(
-            driver, database, decision=decision, entity=entity, candidate=candidate
+        return await _execute_merge(
+            driver, database, decision=decision, entity=entity,
+            candidate=candidate, collect=collect,
         )
-        if not merged:
-            return "noop"
-        await _emit_same_as_event(decision, collect)
-        return "auto_merge"
 
     if decision.action == "link":
         rel_type = decision.details.get("rel_type", "RELATED_TO")
@@ -161,6 +141,44 @@ async def execute(  # pylint: disable=too-many-arguments,too-many-return-stateme
         return "enrich"
 
     return "noop"
+
+
+# Same six-kwarg dispatch contract as execute(); see the note there.
+async def _execute_merge(  # pylint: disable=too-many-arguments
+    driver: AsyncDriver,
+    database: str,
+    *,
+    decision: Decision,
+    entity: Entity,
+    candidate: Candidate,
+    collect: list[dict] | None,
+) -> str:
+    """The merge arm: collapse the pair, or propose it for review.
+
+    Split out of execute() because it is the only arm with two outcomes
+    of its own — whether the rule is allowed to merge at all, and then
+    whether the merge actually happened.
+    """
+    # The per-rule force_auto_merge stamp lets deterministic rules
+    # (exact LEI/CIK/VAT/authority-id, SAME_AS cluster collapse,
+    # GLEIF successor) merge even when the global gate is OFF.
+    # See rules/base.py:Rule.force_auto_merge.
+    forced = bool(decision.details.get("force_auto_merge"))
+    if not settings.auto_merge_enabled and not forced:
+        # Downgraded to a review candidate — NOT an approved equivalence,
+        # so nothing is projected. See the emission contract above.
+        proposed = await _propose_candidate(driver, database, decision=decision)
+        return "flag" if proposed else "noop"
+
+    merged = await _merge(
+        driver, database, decision=decision, entity=entity, candidate=candidate
+    )
+    if not merged:
+        # A :NOT_SAME_AS correction blocked it, or a node is already gone.
+        # Either way nothing was collapsed, so nothing may be asserted.
+        return "noop"
+    await _emit_same_as_event(decision, collect)
+    return "auto_merge"
 
 
 async def _emit_same_as_event(
