@@ -19,7 +19,7 @@ and emits them again. A crash costs a repeat, not a lost event.
 import asyncio
 
 from src.consolidator import actions, engine, eventlog
-from src.consolidator.rules.base import Decision
+from src.consolidator.rules.base import Decision, Entity
 
 
 def _decision(target: str) -> Decision:
@@ -235,3 +235,40 @@ def test_pairs_are_marked_only_after_the_events_land(monkeypatch):
     monkeypatch.setattr(engine.eventlog, "emit_assert_same_as_many", _none)
     asyncio.run(engine._flush_pending_events(None, "neo4j", "run-2", list(pending)))
     assert not marked, "a lost batch must not be recorded as settled"
+
+
+def test_engine_reaches_the_flush_with_the_store_it_must_mark_in(monkeypatch):
+    """The call site, not just the function.
+
+    _flush_pending_events grew driver+database arguments when marking
+    moved after the emit. A stale call site would raise TypeError only
+    once a real consolidation ran — which is to say in prod, not in CI.
+    This pins that `consolidate` reaches the flush and hands it the store
+    it has to mark in.
+    """
+    seen: list[tuple] = []
+
+    async def _spy(driver, database, run_id, pending):
+        seen.append((driver, database, run_id, list(pending)))
+
+    async def _load(*_a, **_k):
+        return Entity(entity_type="Company", id="A", properties={"name": "x"})
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(engine, "_flush_pending_events", _spy)
+    monkeypatch.setattr(engine, "list_rules", lambda *a, **k: [])
+    monkeypatch.setattr(engine.entities, "load", _load)
+    monkeypatch.setattr(engine.audit, "start_run", _noop)
+    monkeypatch.setattr(engine.audit, "end_run", _noop)
+
+    sentinel = object()
+    asyncio.run(engine.consolidate(
+        sentinel, "neo4j-under-test", entity_type="Company", entity_id="A",
+    ))
+
+    assert seen, "consolidate() never reached _flush_pending_events"
+    driver, database, _run_id, _pending = seen[0]
+    assert driver is sentinel
+    assert database == "neo4j-under-test"
