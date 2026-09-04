@@ -10,7 +10,7 @@
 
 # fontem-consolidator
 
-Entity-resolution + rule engine. Consumes events.entity_events, runs rules (LEI-match, fuzzy-name, successor, name+country, …), and either auto-merges duplicates or flags SAME_AS candidates for human review. Hosts its own /resolve and /consolidate HTTP API plus the consolidator-trigger event consumer.
+Entity-resolution + rule engine. Consumes events.entity_events, runs rules (LEI-match, fuzzy-name, successor, name+country, …), and either auto-merges duplicates or records a :SAME_AS_CANDIDATE for human review. A candidate asserts nothing: only an approved equivalence becomes a :SAME_AS edge and an AssertSameAs event, and a :NOT_SAME_AS withdraws one that turned out wrong. Hosts its own /resolve and /consolidate HTTP API plus the consolidator-trigger event consumer.
 
 ## Deploy
 

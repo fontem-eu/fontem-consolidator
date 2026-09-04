@@ -266,10 +266,11 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             # named relationship — running another rule on the same target
             # afterwards is undefined.
             #
-            # `flag` and `conflict` are SAME_AS-edge writes that now APPEND
-            # a detection to r.detections, so multiple rules firing on the
-            # same pair leave the reviewer richer evidence — exact-name +
-            # cosine + fuzzy can all be recorded for one pair.
+            # `flag` and `conflict` write a :SAME_AS_CANDIDATE and APPEND
+            # a detection to it, so multiple rules firing on the same pair
+            # leave the reviewer richer evidence — exact-name + cosine +
+            # fuzzy can all be recorded for one proposal. They assert
+            # nothing and emit nothing; see actions.py.
             if outcome in ("auto_merge", "auto_link"):
                 handled_targets.add(candidate.entity.id)
             # Enrichment never participates in the short-circuit: it's

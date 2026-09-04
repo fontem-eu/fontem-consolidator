@@ -154,8 +154,13 @@ BACKFILL_CYPHER = [
     #
     # Idempotent and cheap once drained: with the flag set, no new ones
     # appear and this matches nothing on subsequent runs.
+    #
+    # Covers :SAME_AS_CANDIDATE too. A self-referential proposal is the
+    # same rule bug wearing the other relationship type, and after the
+    # proposal/assertion split almost everything is a proposal — sweeping
+    # only assertions would clean the half that barely fills up.
     """
-    MATCH (a)-[r:SAME_AS]->(a)
+    MATCH (a)-[r:SAME_AS|SAME_AS_CANDIDATE]->(a)
     CALL (r) {
         DELETE r
     } IN TRANSACTIONS OF 1000 ROWS
