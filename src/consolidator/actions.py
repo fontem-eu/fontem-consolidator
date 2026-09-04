@@ -117,8 +117,7 @@ async def execute(  # pylint: disable=too-many-arguments
     """
     if decision.action == "merge":
         return await _execute_assert(
-            driver, database, decision=decision, entity=entity,
-            candidate=candidate, collect=collect,
+            driver, database, decision=decision, collect=collect,
         )
 
     if decision.action == "link":
@@ -143,13 +142,11 @@ async def execute(  # pylint: disable=too-many-arguments
 
 
 # Same six-kwarg dispatch contract as execute(); see the note there.
-async def _execute_assert(  # pylint: disable=too-many-arguments,unused-argument
+async def _execute_assert(
     driver: AsyncDriver,
     database: str,
     *,
     decision: Decision,
-    entity: Entity,
-    candidate: Candidate,
     collect: list[dict] | None,
 ) -> str:
     """A rule allowed to assert automatically: publish the equivalence.
@@ -162,9 +159,11 @@ async def _execute_assert(  # pylint: disable=too-many-arguments,unused-argument
     also wrote a :SAME_AS edge duplicating the owl:sameAs Virtuoso
     already holds, and nothing in Neo4j ever followed that edge.
 
-    entity/candidate are unused now but stay in the signature: every
-    action handler takes the same shape and the engine's call site is
-    typed against it.
+    Unlike the public execute(), this takes only what it uses: it is a
+    private helper with one call site, so the uniform five-arg handler
+    shape buys nothing here. `entity` and `candidate` described the pair
+    only so the merge could address both nodes; the decision carries the
+    ids the emit needs.
     """
     # The per-rule force_auto_merge stamp lets deterministic rules
     # (exact LEI/CIK/VAT/authority-id, GLEIF successor) assert even when
