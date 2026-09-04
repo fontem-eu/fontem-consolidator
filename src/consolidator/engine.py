@@ -56,7 +56,7 @@ async def _finish_run(  # pylint: disable=too-many-arguments
     trigger does not advance its offset, and the whole consolidation is
     redelivered and redone.
     """
-    await _flush_pending_events(run_id, pending_events)
+    await _flush_pending_events(driver, database, run_id, pending_events)
     summary_outcome = _summarize(decisions_recorded)
     await audit.end_run(
         driver,
@@ -69,20 +69,40 @@ async def _finish_run(  # pylint: disable=too-many-arguments
     return summary_outcome
 
 
-async def _flush_pending_events(run_id: str, pending: list[dict]) -> None:
-    """Write the run's AssertSameAs events as one transaction.
+async def _flush_pending_events(
+    driver, database: str, run_id: str, pending: list[dict],
+) -> None:
+    """Write the run's AssertSameAs events, then record what landed.
 
     Called before the run returns, so a failure here is still inside the
     HTTP request the trigger is waiting on — which is what makes the batch
     safe: a crash before this point fails the dispatch, the trigger does
     not advance its offset, and the whole consolidation is redelivered and
     redone. See eventlog.emit_assert_same_as_many.
+
+    Emit first, mark second, and mark NOTHING on a partial batch. The
+    event is the only record an assertion exists — Neo4j holds no
+    equivalences — so marking first would let a dropped batch look
+    permanently settled and never retry. This way a failed emit costs a
+    repeat on the next sweep, which is the same bargain the batching
+    itself makes.
     """
+    if not pending:
+        return
     emitted = await eventlog.emit_assert_same_as_many(pending)
-    if pending and emitted != len(pending):
+    if emitted != len(pending):
         logger.warning(
-            "consolidator: run {run} emitted {got}/{want} AssertSameAs events",
+            "consolidator: run {run} emitted {got}/{want} AssertSameAs "
+            "events; marking none — the pairs re-derive next sweep",
             run=run_id, got=emitted, want=len(pending),
+        )
+        return
+    marked = await actions.mark_asserted(driver, database, pending)
+    if marked != len(pending):
+        logger.warning(
+            "consolidator: run {run} asserted {want} pairs but marked "
+            "{got}; the unmarked ones will re-emit next sweep",
+            run=run_id, got=marked, want=len(pending),
         )
 
 

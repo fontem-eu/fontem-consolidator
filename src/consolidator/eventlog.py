@@ -197,18 +197,33 @@ async def emit_retract_same_as(  # pylint: disable=too-many-arguments
 
 
 def _emit_many_sync(rows: list[dict], producer: str) -> int:
-    """Insert every collected event inside ONE transaction."""
+    """Insert every collected event inside ONE transaction.
+
+    `rows` are the LOGICAL shape actions._emit_same_as_event collects —
+    a_iri / b_iri / confidence / method / rule / domain. Building the
+    event envelope is this module's job, exactly as it is on the
+    single-emit path; the caller has no business knowing the payload
+    schema.
+    """
     log = _get_log()
     if log is None:
         return 0
+    # Optional dep — see _get_log() for the same lazy-import rationale.
+    from fontem_event_schemas.builders import assert_same_as  # pylint: disable=import-outside-toplevel
     batch_id = uuid.uuid4()
     with log.batch(batch_id, producer=producer) as emit:
         for r in rows:
             emit.upsert(
-                r["event_type"],
-                iri=r["iri"],
+                "AssertSameAs",
+                iri=r["a_iri"],
                 domain=r["domain"],
-                payload=r["payload"],
+                payload=assert_same_as(
+                    a_iri=r["a_iri"],
+                    b_iri=r["b_iri"],
+                    confidence=float(r["confidence"]),
+                    method=r["method"],
+                    rule=r.get("rule"),
+                ),
             )
     return len(rows)
 

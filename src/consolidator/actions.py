@@ -175,8 +175,96 @@ async def _execute_assert(
         # a proposal publishes nothing.
         proposed = await _propose_candidate(driver, database, decision=decision)
         return "flag" if proposed else "noop"
+
+    # Already settled? Then say nothing. The rules are deterministic and
+    # nothing is deleted any more, so exact_lei_match finds the same pair
+    # on every sweep forever — without this the run re-emits a duplicate
+    # AssertSameAs for every deterministic match, every rotation. Merging
+    # used to hide that by deleting the duplicate node.
+    if await _is_settled(driver, database, decision=decision):
+        return "noop"
+
     await _emit_same_as_event(decision, collect)
     return "auto_assert"
+
+
+async def _is_settled(driver: AsyncDriver, database: str, *, decision: Decision) -> bool:
+    """True when this pair has already been asserted or ruled out.
+
+    Reads the candidate edge's terminal status and any correction. Both
+    live in Neo4j on purpose: the assertion itself is a triple in
+    Virtuoso, and checking THAT on every rule evaluation would put a
+    cross-store round-trip in the hot path of the sweep.
+    """
+    label = decision.entity_type
+    id_key = _id_key(label)
+    async with driver.session(database=database) as session:
+        result = await session.run(
+            f"""
+            MATCH (a:{label} {{{id_key}: $source_id}})
+            MATCH (b:{label} {{{id_key}: $target_id}})
+            RETURN (
+              EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }} OR
+              EXISTS {{
+                (a)-[d:SAME_AS_CANDIDATE]-(b)
+                WHERE d.status IN ['approved', 'declined']
+              }}
+            ) AS settled
+            """,
+            source_id=decision.source_id,
+            target_id=decision.target_id,
+        )
+        row = await result.single()
+        return bool(row and row["settled"])
+
+
+async def mark_asserted(driver: AsyncDriver, database: str, rows: list[dict]) -> int:
+    """Record that these pairs were asserted, AFTER the events landed.
+
+    Ordering is the point. The event is now the only record an assertion
+    exists — Neo4j holds no equivalences — so marking before the emit
+    would let a dropped batch look permanently settled and never retry.
+    Marking after means a failed emit simply re-derives next sweep.
+
+    The edge is the same :SAME_AS_CANDIDATE the review queue uses, with
+    origin='auto' to distinguish a rule that was trusted to assert on its
+    own from a pair a human approved.
+    """
+    by_label: dict[str, list[dict]] = {}
+    for r in rows:
+        by_label.setdefault(r["entity_type"], []).append(r)
+    marked = 0
+    async with driver.session(database=database) as session:
+        for label, group in by_label.items():
+            id_key = _id_key(label)
+            result = await session.run(
+                f"""
+                UNWIND $pairs AS pair
+                MATCH (a:{label} {{{id_key}: pair.source_id}})
+                MATCH (b:{label} {{{id_key}: pair.target_id}})
+                WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
+                MERGE (a)-[r:SAME_AS_CANDIDATE]->(b)
+                SET r.status = 'approved',
+                    r.origin = 'auto',
+                    r.method = pair.method,
+                    r.confidence = pair.confidence,
+                    r.decided_at = $now
+                RETURN count(r) AS n
+                """,
+                pairs=[
+                    {
+                        "source_id": r["source_id"],
+                        "target_id": r["target_id"],
+                        "method": r["method"],
+                        "confidence": r["confidence"],
+                    }
+                    for r in group
+                ],
+                now=_now(),
+            )
+            row = await result.single()
+            marked += int(row["n"]) if row else 0
+    return marked
 
 
 async def _emit_same_as_event(
@@ -200,6 +288,12 @@ async def _emit_same_as_event(
             "method": decision.rule_name,
             "rule": decision.rule_name,
             "domain": decision.entity_type.lower(),
+            # Not part of the event payload. The run marks these pairs
+            # settled AFTER the batch lands, so a lost emit is retried
+            # rather than recorded as done — see mark_asserted.
+            "entity_type": decision.entity_type,
+            "source_id": decision.source_id,
+            "target_id": decision.target_id,
         })
         return
     await eventlog.emit_assert_same_as(
