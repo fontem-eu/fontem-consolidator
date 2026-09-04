@@ -139,7 +139,11 @@ async def emit_assert_same_as(  # pylint: disable=too-many-arguments
     return seq
 
 
-async def emit_retract_same_as(
+# Seven kwargs mirror the RetractSameAs envelope: the pair, why it was
+# wrong, who said so, which rule produced it, plus the routing fields.
+# The provenance is the point of a retraction — bundling it into a dict
+# would hide what a correction is required to record.
+async def emit_retract_same_as(  # pylint: disable=too-many-arguments
     *,
     a_iri: str,
     b_iri: str,
