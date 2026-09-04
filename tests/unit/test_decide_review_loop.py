@@ -1,23 +1,25 @@
 """The review loop: proposals, approvals, declines, and corrections.
 
-The model these tests pin down:
+Neo4j holds the workflow, Virtuoso holds identity. Nothing here writes
+an equivalence to Neo4j:
 
-  :SAME_AS_CANDIDATE  a rule's proposal. Emits nothing.
-  :SAME_AS            an approved equivalence. Emits AssertSameAs.
-  :NOT_SAME_AS        a correction of something already asserted.
-                      Emits RetractSameAs.
+  :SAME_AS_CANDIDATE  the proposal, and afterwards the local record of
+                      what was decided (pending -> approved | declined).
+                      Emits nothing on its own.
+  owl:sameAs          the assertion, in Virtuoso, reached only by
+                      emitting AssertSameAs on approval.
+  :NOT_SAME_AS        a correction. Emits RetractSameAs.
 
 The distinction that keeps being got wrong is between DECLINING and
 CORRECTING. Declining rejects a proposal that was never published, so
 there is nothing to retract and no event is emitted. Correcting
-withdraws a claim the platform actually made, so it must emit — and it
-can only work because approval leaves both nodes alive.
+withdraws a claim the platform actually made, so it must emit.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-def _stub_driver(edge_record):
+def _stub_driver(edge_record, blocked=False):
     session = AsyncMock()
     statements: list[str] = []
 
@@ -36,8 +38,13 @@ def _stub_driver(edge_record):
 
     async def run(query, *args, **kwargs):  # pylint: disable=unused-argument
         statements.append(query)
-        # Only the first query (the edge lookup) returns a record.
-        return _Result(edge_record if len(statements) == 1 else None)
+        # The lookup returns the candidate; the NOT_SAME_AS pre-check on
+        # the approve path returns its own row; writes return nothing.
+        if len(statements) == 1:
+            return _Result(edge_record)
+        if "AS blocked" in query:
+            return _Result({"blocked": blocked})
+        return _Result(None)
 
     session.run = AsyncMock(side_effect=run)
     ctx = MagicMock()
@@ -61,11 +68,9 @@ def _edge(status="pending"):
     }
 
 
-def _decide(c, driver, decision, emit, asserted=True):
+def _decide(c, driver, decision, emit):
     with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)), \
-         patch("src.api.routes.candidates.eventlog.emit_assert_same_as", emit), \
-         patch("src.api.routes.candidates.actions.assert_same_as",
-               AsyncMock(return_value=asserted)):
+         patch("src.api.routes.candidates.eventlog.emit_assert_same_as", emit):
         return c.post(
             "/candidates/A/B/decide",
             json={"decision": decision, "reviewer": "someone@fontem.eu"},
@@ -75,28 +80,28 @@ def _decide(c, driver, decision, emit, asserted=True):
 # --------------------------------------------------------------- approve
 
 
-def test_approval_asserts_and_publishes(client):
-    c, _ = client
-    driver, _stmts = _stub_driver(_edge())
+def test_approval_publishes_to_virtuoso_and_marks_the_candidate(client):
+    """The approval IS the emit. Neo4j gets no equivalence edge — only
+    the candidate, marked approved, which is the local record that stops
+    the rules re-proposing the pair."""
+    c, stmts = client[0], None
+    driver, stmts = _stub_driver(_edge())
     emit = AsyncMock(return_value=4242)
-    with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)), \
-         patch("src.api.routes.candidates.eventlog.emit_assert_same_as", emit), \
-         patch("src.api.routes.candidates.actions.assert_same_as",
-               AsyncMock(return_value=True)) as asserter:
-        r = c.post("/candidates/A/B/decide",
-                   json={"decision": "approve", "reviewer": "someone@fontem.eu"})
+    r = _decide(c, driver, "approve", emit)
 
     assert r.status_code == 200
     body = r.json()
     assert body["event_seq"] == 4242
     assert body["projected"] is True
 
-    asserter.assert_awaited_once()
-    assert asserter.await_args.kwargs["origin"] == "review"
     emit.assert_awaited_once()
     kwargs = emit.await_args.kwargs
     assert kwargs["a_iri"] == "http://data.fontem.eu/id/Company/A"
     assert kwargs["b_iri"] == "http://data.fontem.eu/id/Company/B"
+
+    written = " ".join(stmts)
+    assert "'approved'" in written
+    assert "[r:SAME_AS]" not in written, "identity belongs in Virtuoso"
 
 
 def test_legacy_merge_value_still_means_approve(client):
@@ -112,9 +117,9 @@ def test_legacy_merge_value_still_means_approve(client):
 def test_approval_blocked_by_existing_correction(client):
     """A :NOT_SAME_AS outranks a later approval, and nothing is published."""
     c, _ = client
-    driver, _stmts = _stub_driver(_edge())
+    driver, _stmts = _stub_driver(_edge(), blocked=True)
     emit = AsyncMock()
-    r = _decide(c, driver, "approve", emit, asserted=False)
+    r = _decide(c, driver, "approve", emit)
     assert r.status_code == 409
     emit.assert_not_awaited()
 
@@ -175,7 +180,7 @@ def test_already_declined_candidate_is_not_redecidable(client):
 
 def test_correction_retracts_the_published_assertion(client):
     c, _ = client
-    driver, stmts = _stub_driver(_edge())
+    driver, stmts = _stub_driver(_edge(status="approved"))
     retract = AsyncMock(return_value=99)
     with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)), \
          patch("src.api.routes.candidates.eventlog.emit_retract_same_as", retract):
@@ -189,8 +194,9 @@ def test_correction_retracts_the_published_assertion(client):
     assert body["retracted"] is True
 
     written = " ".join(stmts)
-    assert "DELETE s" in written, "the wrong :SAME_AS must go"
+    assert "DELETE c" in written, "the settled candidate must go"
     assert "NOT_SAME_AS" in written, "the correction must be durable"
+    assert "DELETE s" not in written, "there is no :SAME_AS edge to delete"
 
     retract.assert_awaited_once()
     kwargs = retract.await_args.kwargs
@@ -203,7 +209,7 @@ def test_failed_retraction_is_reported(client):
     Reporting success there would be a lie with a wrong owl:sameAs
     still published."""
     c, _ = client
-    driver, _stmts = _stub_driver(_edge())
+    driver, _stmts = _stub_driver(_edge(status="approved"))
     with patch("src.api.routes.candidates.get_driver", AsyncMock(return_value=driver)), \
          patch("src.api.routes.candidates.eventlog.emit_retract_same_as",
                AsyncMock(return_value=None)):

@@ -146,10 +146,10 @@ class _Pacer:
 def _classify(result: engine.ConsolidationResult) -> str:
     """Collapse a run's per-decision outcomes into one coarse label for
     the metric. Priority mirrors engine._summarize:
-    merge > link > conflict > flag > noop."""
+    assert > link > conflict > flag > noop."""
     outcomes = {d["outcome"] for d in result.decisions}
-    if "auto_merge" in outcomes:
-        return "merged"
+    if "auto_assert" in outcomes:
+        return "asserted"
     if "auto_link" in outcomes:
         return "linked"
     if "conflict" in outcomes:

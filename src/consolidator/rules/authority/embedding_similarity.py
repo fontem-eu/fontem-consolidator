@@ -118,9 +118,15 @@ class EmbeddingCosineSameAuthority(Rule):
           AND score >= $threshold
           AND ($cross_country_only = false
                OR coalesce(node.country, '') <> coalesce($self_country, ''))
-        OPTIONAL MATCH (s:Authority {authority_id: $self_id})-[r:SAME_AS]->(node)
-        WITH node, score, r
-        WHERE r IS NULL OR coalesce(r.reviewed, false) = false
+        // Skip pairs somebody already settled. Matched undirected and
+        // against the candidate edge, because Neo4j holds no assertions:
+        // an approved equivalence is an owl:sameAs in Virtuoso, and the
+        // candidate's `status` is the local record that it was decided.
+        OPTIONAL MATCH (s:Authority {authority_id: $self_id})-[r:SAME_AS_CANDIDATE]-(node)
+        OPTIONAL MATCH (s2:Authority {authority_id: $self_id})-[n:NOT_SAME_AS]-(node)
+        WITH node, score, r, n
+        WHERE n IS NULL
+          AND (r IS NULL OR coalesce(r.status, 'pending') = 'pending')
         RETURN node AS n, score AS s
         ORDER BY s DESC
         """

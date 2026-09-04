@@ -271,7 +271,7 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             # leave the reviewer richer evidence — exact-name + cosine +
             # fuzzy can all be recorded for one proposal. They assert
             # nothing and emit nothing; see actions.py.
-            if outcome in ("auto_merge", "auto_link"):
+            if outcome in ("auto_assert", "auto_link"):
                 handled_targets.add(candidate.entity.id)
             # Enrichment never participates in the short-circuit: it's
             # orthogonal to matching — a merged pair can still want
@@ -309,8 +309,8 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
 def _summarize(decisions: list[dict]) -> str:  # pylint: disable=too-many-return-statements
     if not decisions:
         return "no_match"
-    if any(d["outcome"] == "auto_merge" for d in decisions):
-        return "merged"
+    if any(d["outcome"] == "auto_assert" for d in decisions):
+        return "asserted"
     if any(d["outcome"] == "auto_link" for d in decisions):
         return "linked"
     if any(d["outcome"] == "conflict" for d in decisions):

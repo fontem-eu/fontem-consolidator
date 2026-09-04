@@ -76,7 +76,7 @@ async def test_engine_promotes_flag_to_merge_above_threshold():
     async def _capture(_driver, _database, *, decision, entity, candidate, **_):
         del entity, candidate  # unused
         captured_action.append(decision.action)
-        return "auto_merge"
+        return "auto_assert"
 
     with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
         "src.consolidator.engine.entities.load",
@@ -255,7 +255,7 @@ async def test_engine_still_short_circuits_after_auto_merge():
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
         "src.consolidator.engine.actions.execute",
-        AsyncMock(side_effect=["auto_merge", "flag"]),
+        AsyncMock(side_effect=["auto_assert", "flag"]),
     ) as exec_mock:
         await engine.consolidate(
             AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"

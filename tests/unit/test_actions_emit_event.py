@@ -71,8 +71,8 @@ async def test_conflict_does_not_emit_assert_same_as():
 
 @pytest.mark.asyncio
 async def test_downgraded_merge_does_not_emit():
-    """auto_merge disabled turns a merge into a review candidate. It
-    must not publish on the way down."""
+    """auto_merge disabled turns a merge decision into a review
+    candidate. It must not publish on the way down."""
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
@@ -86,26 +86,6 @@ async def test_downgraded_merge_does_not_emit():
             candidate=candidate,
         )
     assert outcome == "flag"
-    emit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_vetoed_merge_does_not_emit():
-    """A :NOT_SAME_AS veto makes _merge a no-op. Emitting anyway would
-    assert an equivalence for a merge that never happened."""
-    driver = MagicMock()
-    candidate = MagicMock()
-    entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_merge", new=AsyncMock(return_value=False)), \
-         patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit, \
-         patch.object(actions.settings, "auto_merge_enabled", True):
-        outcome = await actions.execute(
-            driver, "neo4j",
-            decision=_decision("merge"),
-            entity=entity,
-            candidate=candidate,
-        )
-    assert outcome == "noop"
     emit.assert_not_awaited()
 
 
@@ -129,12 +109,11 @@ async def test_settled_pair_reports_noop():
 
 
 @pytest.mark.asyncio
-async def test_merge_emits_assert_same_as_when_auto_merge_on():
+async def test_allowed_rule_emits_assert_same_as():
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_merge", new=AsyncMock(return_value=True)), \
-         patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit, \
+    with          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit, \
          patch.object(actions.settings, "auto_merge_enabled", True):
         outcome = await actions.execute(
             driver, "neo4j",
@@ -142,12 +121,12 @@ async def test_merge_emits_assert_same_as_when_auto_merge_on():
             entity=entity,
             candidate=candidate,
         )
-    assert outcome == "auto_merge"
+    assert outcome == "auto_assert"
     emit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_merge_force_auto_merge_bypasses_global_gate():
+async def test_force_auto_merge_bypasses_global_gate():
     """force_auto_merge=True in decision.details merges even when
     settings.auto_merge_enabled is False. This is how the
     deterministic identifier rules (exact LEI/CIK/VAT/authority-id,
@@ -162,8 +141,7 @@ async def test_merge_force_auto_merge_bypasses_global_gate():
         confidence=1.0, entity_type="Company",
         details={"force_auto_merge": True},
     )
-    with patch.object(actions, "_merge", new=AsyncMock(return_value=True)) as merge_, \
-         patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
+    with          patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(
@@ -172,21 +150,19 @@ async def test_merge_force_auto_merge_bypasses_global_gate():
             entity=entity,
             candidate=candidate,
         )
-    assert outcome == "auto_merge"
-    merge_.assert_awaited_once()
+    assert outcome == "auto_assert"
     flag_.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_merge_without_force_respects_global_gate():
+async def test_without_force_respects_global_gate():
     """No force_auto_merge stamp → respects the global gate.
     Confirms the bypass is opt-in, not a blanket override.
     """
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_merge", new=AsyncMock(return_value=True)) as merge_, \
-         patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
+    with          patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(
@@ -197,7 +173,6 @@ async def test_merge_without_force_respects_global_gate():
         )
     assert outcome == "flag"
     flag_.assert_awaited_once()
-    merge_.assert_not_called()
 
 
 @pytest.mark.asyncio

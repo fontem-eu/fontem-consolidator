@@ -145,7 +145,7 @@ async def test_measure_lag_reads_seconds():
 # Outcome classification
 # --------------------------------------------------------------------------
 def test_classify_priority():
-    assert sweeper._classify(_result("noop", "flag", "auto_merge")) == "merged"
+    assert sweeper._classify(_result("noop", "flag", "auto_assert")) == "asserted"
     assert sweeper._classify(_result("flag", "auto_link")) == "linked"
     assert sweeper._classify(_result("conflict", "flag")) == "conflict"
     assert sweeper._classify(_result("flag")) == "flagged"

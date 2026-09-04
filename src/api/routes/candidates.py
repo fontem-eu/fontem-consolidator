@@ -42,9 +42,10 @@ async def list_candidates(
     """List :SAME_AS_CANDIDATE proposals awaiting a decision.
 
     Candidates are proposals, not assertions — nothing here has been
-    published to Virtuoso. Approving one writes the :SAME_AS edge and
-    emits AssertSameAs; that is the only path from this queue into the
-    graph as an equivalence.
+    published to Virtuoso. Approving one emits AssertSameAs, which the
+    virtuoso sink projects as owl:sameAs — that is the only path from
+    this queue into an asserted equivalence, and it lands in Virtuoso
+    alone. Neo4j keeps the candidate, marked approved.
 
     `status` defaults to "pending". "declined" lists what reviewers have
     already turned down, which is kept rather than deleted because it is
@@ -246,16 +247,24 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
             decision_type = "manual_keep_related"
 
         else:  # approve
-            # The approval IS the assertion. Both nodes survive — an
-            # assertion has to stay correctable, and :NOT_SAME_AS can
-            # only undo something that still exists.
-            asserted = await actions.assert_same_as(
-                driver, settings.neo4j_database,
-                label=label, source_id=from_id, target_id=to_id,
-                method=rule_name, confidence=float(confidence or 1.0),
-                origin="review", reviewer=body.reviewer,
+            # The assertion goes to Virtuoso and nowhere else. Neo4j gets
+            # no :SAME_AS edge: identity is Virtuoso's job, and a
+            # duplicate edge here would be a second copy of the same fact
+            # that nothing follows.
+            #
+            # The candidate is KEPT, marked approved. It is Neo4j's only
+            # local record that this pair was settled, which is what stops
+            # the rules re-proposing it without a cross-store lookup.
+            blocked = await session.run(
+                f"""
+                MATCH (a:{label} {{{id_key}: $from}})
+                MATCH (b:{label} {{{id_key}: $to}})
+                RETURN EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }} AS blocked
+                """,
+                **{"from": from_id, "to": to_id},
             )
-            if not asserted:
+            rec_blocked = await blocked.single()
+            if rec_blocked is not None and rec_blocked["blocked"]:
                 raise HTTPException(
                     status_code=409,
                     detail="a :NOT_SAME_AS correction blocks this pair",
@@ -263,9 +272,10 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
             await session.run(
                 f"""
                 MATCH (a:{label} {{{id_key}: $from}})-[r:SAME_AS_CANDIDATE]-(b:{label} {{{id_key}: $to}})
-                DELETE r
+                SET r.status = 'approved', r.decided_at = $now,
+                    r.reviewer = $reviewer, r.note = $note
                 """,
-                **{"from": from_id, "to": to_id},
+                **common,
             )
             decision_type = "manual_merge"
 
@@ -317,7 +327,8 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
         # event log; the graph merge still happened. Operators need to see it.
         "event_seq": event_seq,
         # None on an approval means the owl:sameAs assertion did NOT reach
-        # the event log; the :SAME_AS edge still exists. Operators need it.
+        # the event log, so the equivalence was NOT published even though
+        # the candidate is marked approved. Operators need to see that.
         "projected": decision_type != "manual_merge" or event_seq is not None,
     }
 
@@ -334,14 +345,15 @@ class CorrectBody(BaseModel):
     responses={
         404: {
             "description": (
-                "No asserted :SAME_AS between these entities. A proposal that "
-                "was never approved is declined via /decide, not corrected."
+                "No approved equivalence between these entities. A proposal "
+                "that was never approved is declined via /decide, not "
+                "corrected."
             ),
         },
     },
 )
 async def correct(from_id: str, to_id: str, body: CorrectBody):
-    """Record a :NOT_SAME_AS correction against an asserted :SAME_AS.
+    """Record a :NOT_SAME_AS correction and retract the owl:sameAs.
 
     This is the mistake path, and it is deliberately separate from
     declining a candidate. Declining rejects a proposal that was never
@@ -357,11 +369,15 @@ async def correct(from_id: str, to_id: str, body: CorrectBody):
     """
     driver = await get_driver()
     async with driver.session(database=settings.neo4j_database) as session:
+        # The approved candidate is what says this pair WAS asserted.
+        # Neo4j holds no :SAME_AS to look up — the assertion is a triple
+        # in Virtuoso, and this endpoint is what takes it back out.
         result = await session.run(
             """
-            MATCH (a)-[r:SAME_AS]-(b)
+            MATCH (a)-[r:SAME_AS_CANDIDATE]-(b)
             WHERE (a.gmr_id = $from OR a.authority_id = $from)
               AND (b.gmr_id = $to OR b.authority_id = $to)
+              AND r.status = 'approved'
             RETURN a, b, r, labels(a)[0] AS label
             LIMIT 1
             """,
@@ -371,7 +387,7 @@ async def correct(from_id: str, to_id: str, body: CorrectBody):
         if rec is None:
             raise HTTPException(
                 status_code=404,
-                detail="no asserted :SAME_AS between these entities; a "
+                detail="no approved equivalence between these entities; a "
                        "proposal that was never approved is declined via "
                        "/candidates/{from}/{to}/decide, not corrected",
             )
@@ -379,15 +395,13 @@ async def correct(from_id: str, to_id: str, body: CorrectBody):
         id_key = "gmr_id" if label == "Company" else "authority_id"
         retracted_method = rec["r"].get("method", "unknown")
 
-        # Drop the assertion, record the correction, and clear any
-        # candidate for the pair so the queue does not re-offer it.
+        # Record the correction and drop the candidate. The assertion
+        # itself is withdrawn by the RetractSameAs emitted below — it only
+        # ever existed as a triple in Virtuoso.
         await session.run(
             f"""
             MATCH (a:{label} {{{id_key}: $from}})
             MATCH (b:{label} {{{id_key}: $to}})
-            OPTIONAL MATCH (a)-[s:SAME_AS]-(b)
-            DELETE s
-            WITH a, b
             OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b)
             DELETE c
             WITH a, b

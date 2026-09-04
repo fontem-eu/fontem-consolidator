@@ -86,7 +86,7 @@ async def record_decision(  # pylint: disable=too-many-arguments
     """Record a :RuleApplication + :DecisionLog chain.
 
     decision_type is the concrete outcome after the action executor runs:
-      "auto_merge" | "auto_link" | "flag" | "conflict" | "noop"
+      "auto_assert" | "auto_link" | "flag" | "conflict" | "noop"
       | "manual_merge" | "manual_reject" | "manual_keep_related"
     """
     decision_id = str(uuid4())
