@@ -165,6 +165,22 @@ BACKFILL_CYPHER = [
         DELETE r
     } IN TRANSACTIONS OF 1000 ROWS
     """,
+    # Neo4j holds no equivalences any more. identity is Virtuoso's, where
+    # owl:sameAs is closed transitively and symmetrically by the store; a
+    # :SAME_AS edge here was a second copy of that fact which nothing
+    # followed, and keeping it in both stores is what this migration
+    # undoes. Proposals (:SAME_AS_CANDIDATE) and corrections
+    # (:NOT_SAME_AS) stay — those are review workflow, not knowledge.
+    #
+    # Safe to delete without review: every assertion worth keeping is
+    # reachable from the event log as an AssertSameAs, and the rebuild
+    # re-derives the rest. Nothing here is a source-stated fact.
+    """
+    MATCH ()-[r:SAME_AS]->()
+    CALL (r) {
+        DELETE r
+    } IN TRANSACTIONS OF 10000 ROWS
+    """,
 ]
 
 

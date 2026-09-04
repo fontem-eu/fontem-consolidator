@@ -49,6 +49,9 @@ def test_rules_endpoint_lists_all(client):
     assert "fuzzy_name_same_country" in names
     assert "gds_node_similarity_company" in names
     assert "gds_node_similarity_authority" in names
-    assert "gds_same_as_cluster_collapse_company" in names
+    # gds_same_as_cluster_collapse_* are gone: they merged the nodes in a
+    # connected component, which is exactly the behaviour that moved to
+    # Virtuoso's owl:sameAs closure.
+    assert "gds_same_as_cluster_collapse_company" not in names
     assert "exact_authority_id_match" in names
     assert len(rules) >= 12

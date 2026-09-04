@@ -396,35 +396,6 @@ async def test_authority_name_country_merges(driver, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gds_same_as_wcc_collapses_reviewed_cluster(driver, monkeypatch):
-    monkeypatch.setattr(settings, "auto_merge_enabled", True)
-    # Seed 3 companies connected A-B and B-C by :SAME_AS {reviewed:true}
-    async with driver.session() as s:
-        await s.run(
-            """
-            CREATE (a:Company {gmr_id:'A', name:'A', country:'FR', lei:'LEI-CAN', created_at:$t})
-            CREATE (b:Company {gmr_id:'B', name:'B', country:'FR', created_at:$t})
-            CREATE (c:Company {gmr_id:'C', name:'C', country:'FR', created_at:$t})
-            CREATE (a)-[:SAME_AS {reviewed:true, confidence:1.0}]->(b)
-            CREATE (b)-[:SAME_AS {reviewed:true, confidence:1.0}]->(c)
-            """,
-            t=_ts(),
-        )
-
-    # Consolidate A — it's the canonical (has LEI). Rule should merge B and C in.
-    await engine.consolidate(
-        driver, "neo4j", entity_type="Company", entity_id="A", triggered_by="test"
-    )
-
-    remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
-    assert remaining == 1
-    merge_events = await _count(
-        driver, "MATCH (m:MergeEvent) WHERE m.method STARTS WITH 'gds_' RETURN count(m)"
-    )
-    assert merge_events >= 2
-
-
-@pytest.mark.asyncio
 async def test_conflict_flag_survives_subsequent_fuzzy_match(driver, monkeypatch):
     """Regression: when exact-name-country emits conflict and fuzzy matches the same pair,
     the edge must retain conflict:true and method=exact_name_country_match.

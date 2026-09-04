@@ -1,44 +1,43 @@
-"""Action executors — physically modify the graph in response to a Decision.
+"""Action executors — record consolidation decisions.
 
 Every executor is idempotent. Execution order (enforced by engine): the highest-
 confidence rule that produces a non-noop decision wins per candidate pair;
 subsequent rules for that pair are skipped.
 
-Proposals are not assertions
-----------------------------
-Three relationship types, three different facts. They are kept apart
-because collapsing them is what published 1.34M unreviewed guesses:
+Where identity lives
+--------------------
+Neo4j holds the graph and the review workflow. Virtuoso holds identity.
+Nothing asserts an equivalence in both, which is the whole reason for
+adopting Virtuoso: ``owl:sameAs`` there is closed transitively and
+symmetrically by the store, while a ``:SAME_AS`` edge in Neo4j is just an
+edge that nothing follows.
 
-  :SAME_AS_CANDIDATE  A rule proposes these two might be the same.
-                      Carries the detection evidence and awaits a
-                      decision. Emits NOTHING. Never traversed as an
-                      equivalence by anything.
+  Neo4j  :SAME_AS_CANDIDATE  a rule proposes these might be the same.
+                             ``status`` runs pending -> approved |
+                             declined and IS the workflow record: it is
+                             what stops the rules re-proposing a pair
+                             somebody already settled.
+         :NOT_SAME_AS        a correction. Permanently blocks the pair.
 
-  :SAME_AS            These two ARE the same. Written only when a rule
-                      is permitted to merge automatically, or when a
-                      reviewer approves a candidate. Emits AssertSameAs,
-                      which the Virtuoso sink projects as owl:sameAs.
+  Virtuoso  owl:sameAs       the assertion, and the only one. Reached by
+                             emitting AssertSameAs; withdrawn by
+                             RetractSameAs.
 
-  :NOT_SAME_AS        A correction: an assertion that turned out to be
-                      wrong. Emits RetractSameAs and permanently blocks
-                      the pair from being re-proposed or re-asserted.
+So nothing here merges nodes. Collapsing a duplicate into its canonical
+was Neo4j's substitute for reasoning it cannot do: it destroyed the
+losing node, baked an identity decision irreversibly into the graph
+store, and duplicated a fact Virtuoso already holds properly. Queries
+needing graph traversal AND identity federate across the two stores.
 
-Declining a candidate is NOT a :NOT_SAME_AS. A declined proposal never
-asserted anything, so there is nothing to retract; the decision is
-recorded on the candidate edge itself, which is what stops the rules
-re-proposing it on the next sweep.
-
-Why the separation is load-bearing: `:SAME_AS {reviewed: false}` still
-reads as a `:SAME_AS` to every consumer that traverses it — the review
-queue, the graph API, and gds/wcc_collapse, which merges the components
-it finds. A hypothesis stored in the same shape as a conclusion will
-eventually be read as one.
+A candidate asserts nothing and emits nothing. Only an approved
+equivalence — a rule permitted to assert automatically, or a reviewer's
+approval — becomes an AssertSameAs.
 
 When settings.auto_merge_enabled is False, a "merge" decision becomes a
 proposal instead. **Per-rule override**: a decision carrying
-`force_auto_merge: True` (stamped by the engine when the firing rule sets
-`Rule.force_auto_merge = True`) bypasses that gate. Reserved for
-deterministic identifier matches — see `rules/base.py`.
+``force_auto_merge: True`` (stamped by the engine when the firing rule
+sets ``Rule.force_auto_merge = True``) bypasses that gate. Reserved for
+deterministic identifier matches — see ``rules/base.py``.
 """
 
 from datetime import datetime, timezone
@@ -47,7 +46,7 @@ from neo4j import AsyncDriver
 
 from src.config import settings
 from src.consolidator import eventlog
-from src.consolidator.rules.base import Candidate, Decision, Entity
+from src.consolidator.rules.base import Decision
 
 _ID_KEY_BY_LABEL: dict[str, str] = {
     "Company": "gmr_id",
@@ -91,19 +90,20 @@ def _scalar(value: object) -> str | None:
 
 
 # Six kwargs: the five-arg executor dispatch contract plus the optional
-# emit collector. Bundling them into an object would hide the contract
-# every action handler is written against.
-#
-async def execute(  # pylint: disable=too-many-arguments
+async def execute(
     driver: AsyncDriver,
     database: str,
     *,
     decision: Decision,
-    entity: Entity,
-    candidate: Candidate,
     collect: list[dict] | None = None,
 ) -> str:
     """Dispatch to the right executor.
+
+    `entity` and `candidate` used to be part of a uniform five-arg
+    handler contract. They existed so the merge path could address BOTH
+    nodes; nothing merges now, and every remaining executor drives off
+    `decision`, which carries the ids. A parameter kept only to preserve
+    a shape no handler still has is one more thing to keep true.
 
     ``collect`` batches the AssertSameAs emits: when a list is passed the
     event is appended rather than written, and the caller emits the whole
@@ -117,9 +117,8 @@ async def execute(  # pylint: disable=too-many-arguments
     when auto_merge is disabled or a conflict is detected).
     """
     if decision.action == "merge":
-        return await _execute_merge(
-            driver, database, decision=decision, entity=entity,
-            candidate=candidate, collect=collect,
+        return await _execute_assert(
+            driver, database, decision=decision, collect=collect,
         )
 
     if decision.action == "link":
@@ -144,41 +143,40 @@ async def execute(  # pylint: disable=too-many-arguments
 
 
 # Same six-kwarg dispatch contract as execute(); see the note there.
-async def _execute_merge(  # pylint: disable=too-many-arguments
+async def _execute_assert(
     driver: AsyncDriver,
     database: str,
     *,
     decision: Decision,
-    entity: Entity,
-    candidate: Candidate,
     collect: list[dict] | None,
 ) -> str:
-    """The merge arm: collapse the pair, or propose it for review.
+    """A rule allowed to assert automatically: publish the equivalence.
 
-    Split out of execute() because it is the only arm with two outcomes
-    of its own — whether the rule is allowed to merge at all, and then
-    whether the merge actually happened.
+    Nothing is written to Neo4j. An equivalence is a fact about identity,
+    and identity lives in Virtuoso — emitting AssertSameAs IS the action.
+
+    This used to collapse the pair with apoc.refactor.mergeNodes,
+    destroying the losing node to simulate reasoning Neo4j cannot do. It
+    also wrote a :SAME_AS edge duplicating the owl:sameAs Virtuoso
+    already holds, and nothing in Neo4j ever followed that edge.
+
+    Unlike the public execute(), this takes only what it uses: it is a
+    private helper with one call site, so the uniform five-arg handler
+    shape buys nothing here. `entity` and `candidate` described the pair
+    only so the merge could address both nodes; the decision carries the
+    ids the emit needs.
     """
     # The per-rule force_auto_merge stamp lets deterministic rules
-    # (exact LEI/CIK/VAT/authority-id, SAME_AS cluster collapse,
-    # GLEIF successor) merge even when the global gate is OFF.
-    # See rules/base.py:Rule.force_auto_merge.
+    # (exact LEI/CIK/VAT/authority-id, GLEIF successor) assert even when
+    # the global gate is OFF. See rules/base.py:Rule.force_auto_merge.
     forced = bool(decision.details.get("force_auto_merge"))
     if not settings.auto_merge_enabled and not forced:
-        # Downgraded to a review candidate — NOT an approved equivalence,
-        # so nothing is projected. See the emission contract above.
+        # Not allowed to assert on its own — this becomes a proposal, and
+        # a proposal publishes nothing.
         proposed = await _propose_candidate(driver, database, decision=decision)
         return "flag" if proposed else "noop"
-
-    merged = await _merge(
-        driver, database, decision=decision, entity=entity, candidate=candidate
-    )
-    if not merged:
-        # A :NOT_SAME_AS correction blocked it, or a node is already gone.
-        # Either way nothing was collapsed, so nothing may be asserted.
-        return "noop"
     await _emit_same_as_event(decision, collect)
-    return "auto_merge"
+    return "auto_assert"
 
 
 async def _emit_same_as_event(
@@ -212,159 +210,6 @@ async def _emit_same_as_event(
         rule=decision.rule_name,
         domain=decision.entity_type.lower(),
     )
-
-
-# `entity` / `candidate` kwargs are part of the executor dispatch
-# uniform contract (every action handler takes the same shape, even
-# when the merge path drives everything off `decision`). Keeping them
-# in the signature matters for the engine's typed call site.
-async def _merge(  # pylint: disable=unused-argument
-    driver: AsyncDriver,
-    database: str,
-    *,
-    decision: Decision,
-    entity: Entity,
-    candidate: Candidate,
-) -> bool:
-    """Collapse candidate into entity. Rewrites candidate's edges to entity, then deletes candidate.
-    Writes a :MergeEvent audit node. Idempotent: if candidate no longer exists, no-op.
-
-    Returns True when the nodes were actually collapsed. False means the
-    merge did not happen — either a node was already gone, or a reviewer
-    has recorded :NOT_SAME_AS for the pair. The caller must not emit an
-    ``owl:sameAs`` assertion for a merge that did not occur.
-    """
-    label = decision.entity_type
-    id_key = _id_key(label)
-
-    async with driver.session(database=database) as session:
-        # Check both exist
-        result = await session.run(
-            f"""
-            MATCH (canonical:{label} {{{id_key}: $canonical_id}})
-            MATCH (dup:{label} {{{id_key}: $dup_id}})
-            RETURN canonical, dup
-            """,
-            canonical_id=decision.source_id,
-            dup_id=decision.target_id,
-        )
-        record = await result.single()
-        if record is None:
-            return False  # one or both nodes gone — nothing to merge
-
-        # Successor-LEI merges preserve lineage: append the retired LEI to
-        # `canonical.historic_leis` BEFORE the mergeNodes call swallows the
-        # duplicate node. Other rules don't need this.
-        retired_lei = None
-        if decision.rule_name == "successor_lei_match":
-            retired_lei = (decision.details or {}).get("retired_lei")
-
-        merge_result = await session.run(
-            f"""
-            MATCH (canonical:{label} {{{id_key}: $canonical_id}})
-            MATCH (dup:{label} {{{id_key}: $dup_id}})
-            // A reviewer's "different entities" outranks any rule, including
-            // the deterministic ones. mergeNodes DELETES a node — there is no
-            // undo, so the human veto is checked on the irreversible path too.
-            WHERE NOT EXISTS {{ (canonical)-[:NOT_SAME_AS]-(dup) }}
-            FOREACH (lei IN CASE WHEN $retired_lei IS NULL THEN [] ELSE [$retired_lei] END |
-              SET canonical.historic_leis = coalesce(canonical.historic_leis, []) + lei
-            )
-            WITH canonical, dup
-              // produceSelfRel:false — without it, merging two nodes turns the
-              // SAME_AS edge BETWEEN them into a self-loop on the survivor.
-              // Verified against prod APOC: identical merge yields 1 self-loop
-              // with the default and 0 with this flag. 571 such edges had
-              // accumulated, which is what refs.sameas_no_selfloop was failing
-              // on — a node is not a duplicate of itself, and the edge asserts
-              // it is.
-            CALL apoc.refactor.mergeNodes([canonical, dup], {{
-              properties: "discard",
-              mergeRels: true,
-              produceSelfRel: false
-            }}) YIELD node
-            WITH node
-            CREATE (e:MergeEvent {{
-              canonical_id: $canonical_id,
-              merged_id: $dup_id,
-              merged_at: $merged_at,
-              method: $rule_name,
-              entity_type: $entity_type,
-              retired_lei: $retired_lei
-            }})
-            RETURN node
-            """,
-            canonical_id=decision.source_id,
-            dup_id=decision.target_id,
-            merged_at=_now(),
-            rule_name=decision.rule_name,
-            entity_type=label,
-            retired_lei=retired_lei,
-        )
-        # No row means the :NOT_SAME_AS veto above blocked the merge.
-        merged = await merge_result.single() is not None
-
-        # NOTE: the CLIENT_OF / SUPPLIER_OF trade-summary layer was
-        # retired with the fontem-api materialiser (#222) — the graph
-        # explorer traverses AWARDED / AWARDED_TO directly, so a merge
-        # needs no summary-edge rebuild anymore. The old rebuild here
-        # was quietly re-seeding a dead cache after every merge.
-        return merged
-
-
-# Nine kwargs: the pair, the label and key that address it, and the four
-# provenance fields that make an assertion auditable (who/what/how sure/
-# when). Bundling them would hide the provenance the edge exists to carry.
-async def assert_same_as(  # pylint: disable=too-many-arguments
-    driver: AsyncDriver,
-    database: str,
-    *,
-    label: str,
-    source_id: str,
-    target_id: str,
-    method: str,
-    confidence: float,
-    origin: str,
-    reviewer: str | None = None,
-) -> bool:
-    """Write the :SAME_AS edge that says these two ARE the same.
-
-    Public because the review endpoint calls it when a human approves a
-    candidate — that is one of only two ways an equivalence becomes an
-    assertion, and both must produce the identical edge.
-
-    Both nodes survive. An assertion has to stay correctable, and you
-    cannot un-delete a node: `:NOT_SAME_AS` can only undo something that
-    still exists. Collapsing the pair would make the correction path
-    that RetractSameAs exists to serve impossible.
-
-    Returns False if a :NOT_SAME_AS correction blocks the pair.
-    """
-    id_key = _id_key(label)
-    async with driver.session(database=database) as session:
-        result = await session.run(
-            f"""
-            MATCH (a:{label} {{{id_key}: $source_id}})
-            MATCH (b:{label} {{{id_key}: $target_id}})
-            // A correction outranks any rule and any later approval.
-            WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
-            MERGE (a)-[r:SAME_AS]->(b)
-            SET r.method = $method,
-                r.confidence = $confidence,
-                r.origin = $origin,
-                r.reviewer = $reviewer,
-                r.asserted_at = $now
-            RETURN 1 AS asserted
-            """,
-            source_id=source_id,
-            target_id=target_id,
-            method=method,
-            confidence=confidence,
-            origin=origin,
-            reviewer=reviewer,
-            now=_now(),
-        )
-        return await result.single() is not None
 
 
 async def _link(
@@ -417,9 +262,15 @@ async def _propose_candidate(
       r.confidence            : highest of detection_confidences (summary)
       r.method                : rule_name at the max-confidence index
       r.detected_at           : detected_at at the max-confidence index
-      r.status                : "pending" until a reviewer decides;
-                                "declined" is terminal and is what stops
-                                the rules re-proposing the pair forever
+      r.status                : "pending" until a reviewer decides, then
+                                "approved" or "declined". Both are
+                                terminal and are what stop the rules
+                                re-proposing the pair forever. On
+                                approval the edge is KEPT with
+                                status="approved" rather than deleted:
+                                it is Neo4j's only record that the pair
+                                was settled, since the assertion itself
+                                lives in Virtuoso.
       r.conflict              : sticky-once-true (any rule reporting it)
       r.conflict_property     : which identifier disagreed ("lei", "vat",
                                 "registered_as", ...) — set with the flag
@@ -437,19 +288,24 @@ async def _propose_candidate(
             f"""
             MATCH (a:{label} {{{id_key}: $source_id}})
             MATCH (b:{label} {{{id_key}: $target_id}})
-            // Three ways this pair is already settled and must not be
-            // re-proposed. All are matched in either direction because
-            // none of these relationships is directional in meaning.
+            // Two ways this pair is already settled and must not be
+            // re-proposed, both matched in either direction because
+            // neither relationship is directional in meaning.
             //   :NOT_SAME_AS  — a correction; the answer is permanent
-            //   :SAME_AS      — already asserted; nothing left to decide
-            //   declined      — a reviewer said no. Without this the
-            //                   deterministic rules re-propose it on the
-            //                   very next sweep and the queue can never
-            //                   be drained.
+            //   status set    — a reviewer already ruled. Without this
+            //                   the deterministic rules re-propose it on
+            //                   the very next sweep and the queue can
+            //                   never be drained.
+            //
+            // There is deliberately no check for an existing :SAME_AS:
+            // Neo4j holds no assertions any more. The candidate's own
+            // `status` is the local record of what was decided, which is
+            // what lets this run without a cross-store lookup in the hot
+            // path of every rule evaluation.
             WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
-              AND NOT EXISTS {{ (a)-[:SAME_AS]-(b) }}
               AND NOT EXISTS {{
-                (a)-[d:SAME_AS_CANDIDATE]-(b) WHERE d.status = 'declined'
+                (a)-[d:SAME_AS_CANDIDATE]-(b)
+                WHERE d.status IN ['declined', 'approved']
               }}
             MERGE (a)-[r:SAME_AS_CANDIDATE]->(b)
             // Indices of existing entries to KEEP (those that aren't

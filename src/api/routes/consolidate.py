@@ -73,7 +73,7 @@ async def consolidate_batch(req: BatchRequest):
     if req.entity_type not in ("Company", "Authority", "Contract"):
         raise HTTPException(status_code=400, detail=f"unknown entity_type {req.entity_type}")
     driver = await get_driver()
-    summary = {"processed": 0, "merged": 0, "linked": 0, "flagged": 0, "conflicts": 0}
+    summary = {"processed": 0, "asserted": 0, "linked": 0, "flagged": 0, "conflicts": 0}
     run_ids: list[str] = []
     for entity_id in req.ids:
         result = await engine.consolidate(
@@ -90,8 +90,8 @@ async def consolidate_batch(req: BatchRequest):
         summary["processed"] += 1
         for d in result.decisions:
             outcome = d.get("outcome", "")
-            if outcome == "auto_merge":
-                summary["merged"] += 1
+            if outcome == "auto_assert":
+                summary["asserted"] += 1
             elif outcome == "auto_link":
                 summary["linked"] += 1
             elif outcome == "conflict":

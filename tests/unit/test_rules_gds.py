@@ -11,10 +11,6 @@ from src.consolidator.rules.gds.node_similarity import (
     GdsNodeSimilarityAuthority,
     GdsNodeSimilarityCompany,
 )
-from src.consolidator.rules.gds.wcc_collapse import (
-    GdsSameAsClusterCollapseAuthority,
-    GdsSameAsClusterCollapseCompany,
-)
 
 
 @pytest.mark.asyncio
@@ -52,26 +48,3 @@ async def test_gds_node_similarity_resolve_emits_flag():
     assert decision.action == "flag"
     assert decision.confidence == pytest.approx(0.82)
     assert decision.details["method"] == "gds_node_similarity"
-
-
-@pytest.mark.asyncio
-async def test_gds_wcc_collapse_empty_when_gds_absent():
-    rule = GdsSameAsClusterCollapseCompany()
-    with patch("src.consolidator.neo4j.client.get_driver", AsyncMock()), \
-         patch(
-             "src.consolidator.rules.gds.wcc_collapse.gds_available",
-             AsyncMock(return_value=False),
-         ):
-        candidates = await rule.find_candidates(Entity("Company", "A", {}))
-    assert candidates == []
-
-
-@pytest.mark.asyncio
-async def test_gds_wcc_collapse_resolve_emits_merge():
-    rule = GdsSameAsClusterCollapseAuthority()
-    entity = Entity("Authority", "A", {})
-    candidate = Candidate(entity=Entity("Authority", "B", {}), context={})
-    decision = await rule.resolve(entity, candidate)
-    assert decision.action == "merge"
-    assert decision.confidence == 1.0
-    assert decision.details["method"] == "gds_wcc_same_as_cluster"

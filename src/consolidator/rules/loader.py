@@ -23,10 +23,6 @@ from src.consolidator.rules.gds.node_similarity import (
     GdsNodeSimilarityAuthority,
     GdsNodeSimilarityCompany,
 )
-from src.consolidator.rules.gds.wcc_collapse import (
-    GdsSameAsClusterCollapseAuthority,
-    GdsSameAsClusterCollapseCompany,
-)
 from src.consolidator.rules.registry import register
 
 
@@ -48,7 +44,6 @@ def load_all() -> None:
     # Succession consolidation (active + retired LEI → merge, preserve retired
     # in historic_leis). 0.98 confidence — runs after exact-id rules.
     register(SuccessorLeiMatch())
-    register(GdsSameAsClusterCollapseCompany())
     register(ExactNameCountryMatch())
     register(FuzzyNameSameCountry())
     register(GdsNodeSimilarityCompany())
@@ -58,7 +53,6 @@ def load_all() -> None:
     # semantics preserve translations on the canonical node.
     register(TranslationEnrichmentAuthority())
     register(ExactAuthorityIdMatch())
-    register(GdsSameAsClusterCollapseAuthority())
     register(ExactNameCountryMatchAuthority())
     # Cross-country same-name flag for EU bodies (EEAS, JRC, eu-LISA, …).
     # Confidence 0.90 — runs after same-country exact (0.95) and below fuzzy.

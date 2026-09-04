@@ -41,14 +41,6 @@ class Settings(BaseSettings):
     # See rules/company/fuzzy.py for why a wordlist alone is not enough.
     fuzzy_shared_prefix_guard_chars: int = 8
     gds_similarity_threshold: float = 0.7
-    # gds/wcc_collapse MERGES every node in a connected component into
-    # one, deleting the rest. It used to be inert by accident: it
-    # projected `:SAME_AS {reviewed: true}` and nothing ever set that
-    # flag. Now that :SAME_AS means an asserted equivalence, the rule
-    # would start collapsing real components the moment approvals begin,
-    # which would destroy the very nodes :NOT_SAME_AS corrections need to
-    # still exist. Inert by intent now, not by accident.
-    gds_cluster_collapse_enabled: bool = False
     gds_top_k: int = 5
 
     # fontem-linguistics — translation + embedding service. Deployed as a
