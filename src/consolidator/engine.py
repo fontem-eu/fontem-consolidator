@@ -240,8 +240,7 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
                 )
 
             outcome = await actions.execute(
-                driver, database, decision=decision, entity=entity,
-                candidate=candidate, collect=pending_events,
+                driver, database, decision=decision, collect=pending_events,
             )
             await audit.record_decision(
                 driver,

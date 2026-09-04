@@ -46,7 +46,7 @@ from neo4j import AsyncDriver
 
 from src.config import settings
 from src.consolidator import eventlog
-from src.consolidator.rules.base import Candidate, Decision, Entity
+from src.consolidator.rules.base import Decision
 
 _ID_KEY_BY_LABEL: dict[str, str] = {
     "Company": "gmr_id",
@@ -90,19 +90,20 @@ def _scalar(value: object) -> str | None:
 
 
 # Six kwargs: the five-arg executor dispatch contract plus the optional
-# emit collector. Bundling them into an object would hide the contract
-# every action handler is written against.
-#
-async def execute(  # pylint: disable=too-many-arguments
+async def execute(
     driver: AsyncDriver,
     database: str,
     *,
     decision: Decision,
-    entity: Entity,
-    candidate: Candidate,
     collect: list[dict] | None = None,
 ) -> str:
     """Dispatch to the right executor.
+
+    `entity` and `candidate` used to be part of a uniform five-arg
+    handler contract. They existed so the merge path could address BOTH
+    nodes; nothing merges now, and every remaining executor drives off
+    `decision`, which carries the ids. A parameter kept only to preserve
+    a shape no handler still has is one more thing to keep true.
 
     ``collect`` batches the AssertSameAs emits: when a list is passed the
     event is appended rather than written, and the caller emits the whole
