@@ -1,11 +1,11 @@
 """Tests for the AssertSameAs emission contract.
 
 ``owl:sameAs`` is published for APPROVED equivalences only — an
-auto-merge here, or a reviewer's approval in the queue. A ``flag`` or
-``conflict`` outcome is a review *candidate* and must emit nothing.
+auto-merge here, or a reviewer's approval in the queue. Everything else
+writes a :SAME_AS_CANDIDATE, which is a proposal and emits nothing.
 
-These tests previously asserted the opposite. Emitting on flag put
-1.34M unreviewed pairs into Virtuoso, of which the objectively
+These tests previously asserted the opposite. Emitting on every match
+put 1.34M unreviewed pairs into Virtuoso, of which the objectively
 checkable subset (both sides carrying a national registration number)
 was ~99% wrong. See actions.py's module docstring.
 """
@@ -30,13 +30,13 @@ def _decision(action: str, *, conflict: bool = False, rule: str = "rule_x") -> D
 
 
 @pytest.mark.asyncio
-async def test_flag_does_not_emit_assert_same_as():
-    """A flag is an unreviewed hypothesis. It queues a candidate and
-    publishes nothing."""
+async def test_proposal_does_not_emit_assert_same_as():
+    """A proposal is an unreviewed hypothesis. It writes a candidate
+    edge and publishes nothing."""
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_flag_same_as", new=AsyncMock()) as fsa, \
+    with patch.object(actions, "_propose_candidate", new=AsyncMock()) as fsa, \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit:
         outcome = await actions.execute(
             driver, "neo4j",
@@ -57,7 +57,7 @@ async def test_conflict_does_not_emit_assert_same_as():
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_flag_same_as", new=AsyncMock()), \
+    with patch.object(actions, "_propose_candidate", new=AsyncMock()), \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit:
         outcome = await actions.execute(
             driver, "neo4j",
@@ -76,7 +76,7 @@ async def test_downgraded_merge_does_not_emit():
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_flag_same_as", new=AsyncMock()), \
+    with patch.object(actions, "_propose_candidate", new=AsyncMock()), \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit, \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(
@@ -110,13 +110,13 @@ async def test_vetoed_merge_does_not_emit():
 
 
 @pytest.mark.asyncio
-async def test_vetoed_flag_reports_noop():
-    """A vetoed flag wrote no edge, so the audit must not claim a
-    candidate was queued."""
+async def test_settled_pair_reports_noop():
+    """Already corrected, asserted or declined — no candidate edge was
+    written, so the audit must not claim one was queued."""
     driver = MagicMock()
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
-    with patch.object(actions, "_flag_same_as", new=AsyncMock(return_value=False)), \
+    with patch.object(actions, "_propose_candidate", new=AsyncMock(return_value=False)), \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit:
         outcome = await actions.execute(
             driver, "neo4j",
@@ -163,7 +163,7 @@ async def test_merge_force_auto_merge_bypasses_global_gate():
         details={"force_auto_merge": True},
     )
     with patch.object(actions, "_merge", new=AsyncMock(return_value=True)) as merge_, \
-         patch.object(actions, "_flag_same_as", new=AsyncMock()) as flag_, \
+         patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(
@@ -186,7 +186,7 @@ async def test_merge_without_force_respects_global_gate():
     candidate = MagicMock()
     entity = Entity(entity_type="Company", id="A", properties={})
     with patch.object(actions, "_merge", new=AsyncMock(return_value=True)) as merge_, \
-         patch.object(actions, "_flag_same_as", new=AsyncMock()) as flag_, \
+         patch.object(actions, "_propose_candidate", new=AsyncMock()) as flag_, \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()), \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(

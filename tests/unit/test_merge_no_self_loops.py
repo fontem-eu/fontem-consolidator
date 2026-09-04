@@ -11,10 +11,15 @@ refs.sameas_no_selfloop block-tier failure. They also corrupt anything
 that walks SAME_AS to build clusters, since every merged node becomes its
 own neighbour.
 
-Both merge paths are covered: the automatic one in actions._merge and the
-manual review one in the candidates route. They merge the same way, so
-they need the same flag, and a fix applied to only one of them would look
-correct until somebody used the review queue.
+The automatic path in actions._merge is covered here, along with a sweep
+that catches any new call site appearing without the flag.
+
+The review route no longer merges at all: approving a candidate writes a
+:SAME_AS edge and leaves both nodes standing, because an assertion has to
+remain correctable and :NOT_SAME_AS can only undo something that still
+exists. That invariant is guarded below — if a merge ever reappears in
+the review path, the correction endpoint silently stops working for
+every pair it touches.
 """
 import pathlib
 import re
@@ -40,12 +45,21 @@ def test_actions_merge_disables_self_rel():
         assert "produceSelfRel: false" in cfg
 
 
-def test_manual_review_merge_disables_self_rel():
-    """The review queue merges through its own copy of this Cypher."""
-    configs = _merge_configs("src/api/routes/candidates.py")
-    assert configs, "no mergeNodes call found in candidates.py"
-    for cfg in configs:
-        assert "produceSelfRel: false" in cfg
+def test_review_approval_does_not_delete_a_node():
+    """Approving a candidate must assert, not collapse.
+
+    A correction (:NOT_SAME_AS + RetractSameAs) withdraws a published
+    equivalence, which requires both nodes to still exist. If approval
+    merged them, every approved pair would be permanently uncorrectable
+    — and approval is the path a human explicitly signed off on, so it
+    is the worst place to lose that ability.
+    """
+    src = pathlib.Path("src/api/routes/candidates.py").read_text(encoding="utf-8")
+    assert "apoc.refactor.mergeNodes" not in src, (
+        "the review route merges nodes again; approval must write a "
+        ":SAME_AS edge and keep both nodes so corrections stay possible"
+    )
+    assert "assert_same_as" in src
 
 
 def test_every_merge_call_site_is_covered():
