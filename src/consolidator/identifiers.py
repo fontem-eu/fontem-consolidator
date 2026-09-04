@@ -104,6 +104,25 @@ def canon_siret(raw: str | None) -> str | None:
     return s if _SIRET_RE.match(s) else None
 
 
+def canon_registration_number(raw: str | None) -> str | None:
+    """Canonical national registration number (Handelsregister, GSTIN,
+    charity number, CVR, KRS, ...).
+
+    There is no cross-country format to validate against, so this only
+    normalises for comparison: upper-case and drop everything that isn't
+    alphanumeric, so "HRB 117457" and "hrb-117457" compare equal. Values
+    are only ever compared WITHIN a country, where the registry format is
+    consistent, and only as a weak signal (see rules/conflict.py).
+
+    Returns None for values too short to be discriminating — a 1-2 char
+    "number" is more likely a placeholder than a real registration.
+    """
+    if not raw:
+        return None
+    s = re.sub(r"[^A-Za-z0-9]", "", str(raw)).upper()
+    return s if len(s) >= 3 else None
+
+
 def looks_like_ted_notice(raw: str | None) -> bool:
     """True when the value has the TED publication-notice shape (`1234-5-6-1`)."""
     return bool(raw and _TED_NOTICE_RE.match(raw.strip()))

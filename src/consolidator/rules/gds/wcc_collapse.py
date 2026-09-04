@@ -4,6 +4,27 @@ After humans confirm fuzzy matches by setting `:SAME_AS {reviewed: true}`, the
 graph has clusters of equivalent nodes. This rule walks that subgraph, picks a
 canonical per cluster, and merges the rest.
 
+DISABLED BY DEFAULT — settings.gds_cluster_collapse_enabled.
+
+This rule was inert by accident rather than by design: it projects
+`:SAME_AS {reviewed: true}` and no code path ever set that flag. That
+accident was load-bearing, because "keep as related" DID set it, and
+that answer means "NOT the same entity" — so a reviewer choosing it
+would have fed this projection and had one of the two nodes deleted by
+`force_auto_merge`.
+
+Now that `:SAME_AS` means an asserted equivalence rather than an
+unreviewed guess, the accident no longer protects anything: the moment
+approvals start, real components exist and this rule would collapse
+them. That directly contradicts the correction model — `:NOT_SAME_AS`
+withdraws an assertion, which it can only do while both nodes still
+exist. Merging is irreversible; assertion is not.
+
+Kept because a batch cluster collapse is a reasonable thing to want if
+bulk approval is ever added, and this is where it would live. Before
+enabling it, decide what a correction is supposed to mean for a pair
+that no longer has two nodes.
+
 Canonical selection order (stable):
   1. Has an LEI (for Company) / has an authority_id (for Authority — always true, so moot)
   2. Oldest `created_at`
@@ -14,6 +35,7 @@ from __future__ import annotations
 
 from neo4j import AsyncDriver
 
+from src.config import settings
 from src.consolidator.neo4j.gds import gds_available, projected_subgraph
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
@@ -32,6 +54,10 @@ class _GdsSameAsClusterCollapseBase(Rule):
     id_key: str
 
     async def applies(self, entity: Entity) -> bool:
+        # Off unless explicitly enabled — see the class docstring and
+        # settings.gds_cluster_collapse_enabled. This rule deletes nodes.
+        if not settings.gds_cluster_collapse_enabled:
+            return False
         return entity.entity_type == self.anchor_label
 
     # The WCC pipeline (pre-check + projection + stream + canonical

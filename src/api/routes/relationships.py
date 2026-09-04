@@ -1,6 +1,10 @@
 """Manual review queue for non-SAME_AS relationships.
 
-The /candidates endpoint reviews `:SAME_AS` edges (entity dedup).
+The /candidates endpoint reviews `:SAME_AS_CANDIDATE` edges (entity
+dedup), where a proposal and an assertion are separate relationship
+types. This queue is simpler: the `reviewed` flag here lives on the
+relationship being reviewed, because a :REPRESENTS is a source-stated
+fact being confirmed rather than a derived equivalence being asserted.
 This endpoint reviews edges that the new resolver-driven ETLs
 write with `reviewed=false`:
 
@@ -8,7 +12,7 @@ write with `reviewed=false`:
   - `:SANCTIONED`  — Company → SanctionedEntity (EU consolidated list)
 
 Different action vocabulary from /candidates: a SAME_AS review picks
-between {merge, reject, keep_as_related}; a relationship review just
+between {approve, decline, keep_as_related}; a relationship review just
 confirms (`accept`) or rejects (`reject`) the relationship as
 written. There's no "merge" because we're not asserting two nodes
 are the same entity — only that one stands in some relation to the

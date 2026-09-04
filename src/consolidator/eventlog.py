@@ -139,6 +139,63 @@ async def emit_assert_same_as(  # pylint: disable=too-many-arguments
     return seq
 
 
+# Seven kwargs mirror the RetractSameAs envelope: the pair, why it was
+# wrong, who said so, which rule produced it, plus the routing fields.
+# The provenance is the point of a retraction — bundling it into a dict
+# would hide what a correction is required to record.
+async def emit_retract_same_as(  # pylint: disable=too-many-arguments
+    *,
+    a_iri: str,
+    b_iri: str,
+    reason: str,
+    reviewer: str | None = None,
+    retracted_method: str | None = None,
+    domain: str = "consolidation",
+    producer: str = "fontem-consolidator",
+) -> int | None:
+    """Emit a RetractSameAs event withdrawing a published equivalence.
+
+    Unlike the assert path, a swallowed failure here leaves a WRONG
+    owl:sameAs standing in Virtuoso after an operator has already been
+    told it was corrected. The Neo4j side is corrected regardless, so we
+    still don't raise — but the seq is returned so the caller can report
+    that the retraction did not reach the event log.
+    """
+    # Optional dep — see _get_log() for the same lazy-import rationale.
+    try:
+        from fontem_event_schemas.builders import retract_same_as  # pylint: disable=import-outside-toplevel
+    except ImportError:  # pragma: no cover
+        logger.warning(
+            "eventlog: fontem-event-schemas not installed, skipping emit"
+        )
+        return None
+    payload = retract_same_as(
+        a_iri=a_iri, b_iri=b_iri, reason=reason,
+        reviewer=reviewer, retracted_method=retracted_method,
+    )
+    try:
+        seq = await asyncio.to_thread(
+            _emit_sync,
+            event_type="RetractSameAs",
+            iri=a_iri,
+            domain=domain,
+            payload=payload,
+            producer=producer,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "eventlog: RetractSameAs emit failed (a={a}, b={b}) — the "
+            "owl:sameAs may still stand in Virtuoso",
+            a=a_iri, b=b_iri,
+        )
+        return None
+    logger.info(
+        "eventlog: RetractSameAs seq={seq} a={a} b={b} reason={r}",
+        seq=seq, a=a_iri, b=b_iri, r=reason,
+    )
+    return seq
+
+
 def _emit_many_sync(rows: list[dict], producer: str) -> int:
     """Insert every collected event inside ONE transaction."""
     log = _get_log()

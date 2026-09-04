@@ -28,7 +28,27 @@ class Settings(BaseSettings):
     # suffixes stripped). 0.92 keeps very-close variants while rejecting
     # parent/subsidiary pairs like "SOCOTEC" vs "SOCOTEC CONSTRUCTION" (~0.88).
     fuzzy_name_threshold: float = 0.92
+    # Minimum length of the normalised (legal-form-stripped) name for the
+    # fuzzy rule to consider it at all. A 1-3 character remainder like "MBS"
+    # or "GK" matches dozens of unrelated companies per country and carries
+    # no corroborating field on the procurement-stub side, so it is noise
+    # the reviewer can never resolve. Exact-name matching still covers them.
+    fuzzy_min_distinctive_chars: int = 4
+    # Shared-boilerplate guard. When two normalised names share a common
+    # prefix at least this long, that prefix is assumed to be an unstripped
+    # legal form or other boilerplate rather than the company identity, and
+    # the parts AFTER it must independently clear fuzzy_name_threshold.
+    # See rules/company/fuzzy.py for why a wordlist alone is not enough.
+    fuzzy_shared_prefix_guard_chars: int = 8
     gds_similarity_threshold: float = 0.7
+    # gds/wcc_collapse MERGES every node in a connected component into
+    # one, deleting the rest. It used to be inert by accident: it
+    # projected `:SAME_AS {reviewed: true}` and nothing ever set that
+    # flag. Now that :SAME_AS means an asserted equivalence, the rule
+    # would start collapsing real components the moment approvals begin,
+    # which would destroy the very nodes :NOT_SAME_AS corrections need to
+    # still exist. Inert by intent now, not by accident.
+    gds_cluster_collapse_enabled: bool = False
     gds_top_k: int = 5
 
     # fontem-linguistics — translation + embedding service. Deployed as a

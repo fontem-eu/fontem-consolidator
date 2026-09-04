@@ -36,11 +36,44 @@ _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]')
 # block; Python's re only lowercases ASCII unless you opt in to Unicode.
 _LEGAL_SUFFIX = re.compile(
     r"(?:"
-    # Long Slavic forms first (must be greedy before short tokens like ТОВ / ООО)
+    # Long forms first — they must win before short tokens like ТОВ / SIA / AS.
+    # A missing entry here is NOT cosmetic: the unstripped boilerplate becomes
+    # a shared prefix, and Jaro-WINKLER pays a bonus for shared prefixes, so
+    # every company in that jurisdiction scores ~0.95 against every other. The
+    # Latvian long form was absent and produced 29,204 edges, including
+    # AR TEXTIL = ZABBIX at 0.953. `_shared_prefix_ok` is the structural
+    # backstop for whatever is still missing from this list.
     r"(?i:ТОВАРИСТВО\s+З\s+ОБМЕЖЕНОЮ\s+ВІДПОВІДАЛЬНІСТЮ)|"       # UA LLC
     r"(?i:ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ\s+ОТВЕТСТВЕННОСТЬЮ)|"      # RU LLC
     r"(?i:SPÓŁKA\s+Z\s+OGRANICZONĄ\s+ODPOWIEDZIALNOŚCIĄ)|"        # PL LLC long form
     r"(?i:SPÓŁKA\s+AKCYJNA)|"                                      # PL joint-stock
+    r"(?i:SABIEDRĪBA\s+AR\s+IEROBEŽOTU\s+ATBILDĪBU)|"             # LV LLC
+    r"(?i:AKCIJU\s+SABIEDRĪBA)|"                                   # LV joint-stock
+    r"(?i:UŽDAROJI\s+AKCINĖ\s+BENDROVĖ)|"                         # LT LLC
+    r"(?i:VIEŠOJI\s+ĮSTAIGA)|"                                     # LT public body
+    r"(?i:AKCINĖ\s+BENDROVĖ)|"                                     # LT joint-stock
+    r"(?i:SPOLEČNOST\s+S\s+RUČENÍM\s+OMEZENÝM)|"                  # CZ LLC
+    r"(?i:AKCIOVÁ\s+SPOLEČNOST)|"                                  # CZ joint-stock
+    r"(?i:SPOLOČNOSŤ\s+S\s+RUČENÍM\s+OBMEDZENÝM)|"                # SK LLC
+    r"(?i:GESELLSCHAFT\s+MIT\s+BESCHRÄNKTER\s+HAFTUNG)|"          # DE LLC
+    r"(?i:AKTIENGESELLSCHAFT)|"                                     # DE joint-stock
+    r"(?i:SOCIETÀ\s+A\s+RESPONSABILITÀ\s+LIMITATA)|"              # IT LLC
+    r"(?i:SOCIETÀ\s+PER\s+AZIONI)|"                               # IT joint-stock
+    r"(?i:SOCIEDAD\s+(?:DE\s+)?RESPONSABILIDAD\s+LIMITADA)|"      # ES LLC
+    r"(?i:SOCIEDAD\s+(?:LIMITADA|ANÓNIMA))|"                       # ES short-long
+    r"(?i:SOCIEDADE\s+POR\s+QUOTAS)|"                             # PT LLC
+    r"(?i:SOCIÉTÉ\s+(?:À|A)\s+RESPONSABILIT(?:É|E)\s+LIMIT(?:É|E)E)|"  # FR LLC
+    r"(?i:SOCIÉTÉ\s+PAR\s+ACTIONS\s+SIMPLIFIÉE)|"                 # FR SAS long
+    r"(?i:SOCIÉTÉ\s+ANONYME)|"                                     # FR SA long
+    r"(?i:KORLÁTOLT\s+FELELŐSSÉGŰ\s+TÁRSASÁG)|"                    # HU LLC
+    r"(?i:SOCIETATE\s+CU\s+R(?:Ă|A)SPUNDERE\s+LIMITAT(?:Ă|A))|"   # RO LLC
+    r"(?i:БЪЛГАРСКО\s+ДРУЖЕСТВО\s+С\s+ОГРАНИЧЕНА\s+ОТГОВОРНОСТ)|"  # BG LLC
+    r"(?i:ДРУЖЕСТВО\s+С\s+ОГРАНИЧЕНА\s+ОТГОВОРНОСТ)|"             # BG LLC (short)
+    r"(?i:NAAMLOZE\s+VENNOOTSCHAP)|"                               # NL/BE NV
+    r"(?i:BESLOTEN\s+VENNOOTSCHAP)|"                               # NL/BE BV
+    r"(?i:OSAÜHING)|"                                               # EE LLC
+    r"(?i:AKCIONARSKO\s+DRUŠTVO)|"                                 # RS/HR joint-stock
+    r"(?i:DRUŠTVO\s+S\s+OGRANIČENOM\s+ODGOVORNOŠĆU)|"             # HR LLC
     # Short forms — word-boundary anchored
     r"\b(?:"
     # French / Romance
@@ -78,6 +111,40 @@ def _normalise(name: str) -> str:
     s = _PUNCT.sub(" ", s)
     s = _SPACES.sub(" ", s).strip()
     return s
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def _shared_prefix_ok(a: str, b: str, threshold: float) -> bool:
+    """Reject pairs whose similarity rests on shared leading boilerplate.
+
+    `_LEGAL_SUFFIX` is a wordlist, and a wordlist is never complete. When
+    it misses a jurisdiction's long legal form, that form survives
+    normalisation as a shared prefix on every company in the country — and
+    because Jaro-*Winkler* adds a bonus for shared prefixes, the score goes
+    UP the longer the boilerplate is. That is how one Latvian company was
+    asserted identical to 1,333 others at ~0.95.
+
+    So: when the two names share a long prefix, treat the prefix as
+    boilerplate and require what FOLLOWS it to clear the bar on its own.
+
+    A remainder that is empty on either side is the legitimate
+    "name" vs "name + qualifier" case ("PI VINDIJA DD" vs
+    "PI VINDIJA DD VARAZDIN") and is left to the main score.
+    """
+    lcp = _common_prefix_len(a, b)
+    if lcp < settings.fuzzy_shared_prefix_guard_chars:
+        return True
+    rest_a, rest_b = a[lcp:].strip(), b[lcp:].strip()
+    if not rest_a or not rest_b:
+        return True
+    return JaroWinkler.normalized_similarity(rest_a, rest_b) >= threshold
 
 
 class FuzzyNameSameCountry(Rule):
@@ -138,17 +205,20 @@ class FuzzyNameSameCountry(Rule):
 
         threshold = settings.fuzzy_name_threshold
         norm_self = _normalise(entity.properties["name"])
-        if not norm_self:
+        # Too short to discriminate — see settings.fuzzy_min_distinctive_chars.
+        if len(norm_self) < settings.fuzzy_min_distinctive_chars:
             return []
 
         out: list[Candidate] = []
         for rec in records:
             props = dict(rec["node"])
             norm_other = _normalise(props.get("name") or "")
-            if not norm_other:
+            if len(norm_other) < settings.fuzzy_min_distinctive_chars:
                 continue
             sim = JaroWinkler.normalized_similarity(norm_self, norm_other)
             if sim < threshold:
+                continue
+            if not _shared_prefix_ok(norm_self, norm_other, threshold):
                 continue
             out.append(
                 Candidate(
