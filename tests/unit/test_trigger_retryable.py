@@ -16,9 +16,9 @@ import pytest
 @pytest.fixture(name="trigger")
 def _trigger(monkeypatch):
     monkeypatch.setenv("CONSOLIDATOR_URL", "http://consolidator.test")
-    from consolidator.trigger.consumer import ConsolidatorTrigger
+    from src.consolidator.trigger.consumer import ConsolidatorTrigger
 
-    with patch("consolidator.trigger.consumer.EventConsumer.__init__",
+    with patch("src.consolidator.trigger.consumer.EventConsumer.__init__",
                lambda self, *a, **k: None):
         t = ConsolidatorTrigger.__new__(ConsolidatorTrigger)
         t.consolidator_url = "http://consolidator.test"
