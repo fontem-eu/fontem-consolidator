@@ -16,8 +16,17 @@ event in it has succeeded; if any one fails the batch retries
 
 Failure handling:
   * 2xx, 409                → success.
-  * 5xx, network error      → raise; EventConsumer retries the batch.
-  * 4xx (other than 409)    → raise; eventually DLQ'd via batch retry.
+  * 5xx, network error      → raise; ``is_retryable`` classifies these
+                              as the consolidator being unavailable, so
+                              the offset holds and the batch replays
+                              intact once it is back.
+  * 4xx (other than 409/429) → raise; eventually DLQ'd via batch retry.
+
+The retryable split matters more than it looks. Without it the base
+class treats a repeated failure as poison and advances the offset past
+it, and nothing re-emits a skipped event — a consolidator redeploy
+would silently leave those entities un-consolidated for good.
+virtuoso_sink lost 4,006 events to exactly that on 2026-09-06.
 
 Per-event DLQ would require extending the EventConsumer base class
 to commit per-event rather than per-batch. We accept batch-level
@@ -65,6 +74,24 @@ class ConsolidatorTrigger(EventConsumer):
         self.concurrency = max(1, int(
             os.environ.get("CONSOLIDATOR_TRIGGER_CONCURRENCY", "10")
         ))
+
+    def is_retryable(self, exc: Exception) -> bool:
+        """Is this the consolidator being unavailable, not a bad event?
+
+        EventConsumer skips an event that fails max_attempts times in a
+        row. Right for a malformed payload, wrong for a redeploy: the
+        event log is the only copy and nothing re-emits a skipped
+        event, so those entities would never be consolidated.
+
+        A 4xx other than 429 is the consolidator rejecting THIS event,
+        which is the poison case the skip exists for.
+        """
+        if isinstance(exc, (httpx.TransportError, httpx.StreamError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = exc.response.status_code
+            return code == 429 or 500 <= code < 600
+        return False
 
     def handle(self, batch: list[EventEnvelope]) -> None:
         # Filter early — we don't want to spend executor slots on
