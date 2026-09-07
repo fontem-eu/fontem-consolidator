@@ -113,6 +113,44 @@ def _normalise(name: str) -> str:
     return s
 
 
+#: Hard identifiers that corroborate a name match. A record carrying any
+#: of them can be checked against its twin by find_conflict; a record
+#: carrying none rests entirely on its name.
+_HARD_IDENTIFIERS = ("lei", "vat", "cik", "registered_as")
+
+#: Emitted instead of the raw similarity when a match rests on a single
+#: shared token and neither side can be corroborated. Sits inside the
+#: review band [fuzzy_name_threshold, auto_merge_threshold) and near its
+#: floor, so these sort to the front of a queue ordered by ascending
+#: confidence — which is where a reviewer should meet them first.
+SINGLE_TOKEN_CONFIDENCE = 0.93
+
+
+def _has_hard_identifier(props: dict) -> bool:
+    return any(props.get(k) for k in _HARD_IDENTIFIERS)
+
+
+def _rests_on_one_token(norm_name: str, a_props: dict, b_props: dict) -> bool:
+    """Does this match rest on a single word and nothing else?
+
+    _normalise strips the legal form, so "Siemens AG" and a bare
+    "Siemens" both become "SIEMENS" and score 1.0. That is right for
+    "ALCON NV" / "ALCON" and wrong for a record that just says
+    "Siemens", because Siemens Energy AG and Siemens Healthineers AG
+    have been separately listed companies since 2020 and a bare brand
+    token cannot tell you which one it meant.
+
+    A hard identifier on both sides settles it — find_conflict already
+    rejects the pair if they disagree, so agreement (or one-sided
+    presence checked against the other's absence) is corroboration the
+    name alone does not provide. With no identifier anywhere, one word
+    is the entire evidence.
+    """
+    if " " in norm_name:
+        return False
+    return not (_has_hard_identifier(a_props) and _has_hard_identifier(b_props))
+
+
 def _common_prefix_len(a: str, b: str) -> int:
     n = min(len(a), len(b))
     i = 0
@@ -245,6 +283,24 @@ class FuzzyNameSameCountry(Rule):
                 },
             )
         sim = float(candidate.context.get("jw_similarity", 0.0))
+        details: dict = {"jw_similarity": sim}
+        norm = _normalise(entity.properties.get("name") or "")
+        if _rests_on_one_token(norm, entity.properties, candidate.entity.properties):
+            # Keep it as a candidate, but not as an auto-merge: the
+            # emitted confidence is what the engine compares against
+            # auto_merge_threshold, so capping it here routes the pair
+            # to review instead of merging it silently.
+            details["single_token_match"] = True
+            details["uncorroborated_token"] = norm
+            return Decision(
+                rule_name=self.name,
+                action="flag",
+                source_id=entity.id,
+                target_id=candidate.entity.id,
+                confidence=min(sim, SINGLE_TOKEN_CONFIDENCE),
+                entity_type="Company",
+                details=details,
+            )
         return Decision(
             rule_name=self.name,
             action="flag",
@@ -252,5 +308,5 @@ class FuzzyNameSameCountry(Rule):
             target_id=candidate.entity.id,
             confidence=sim,
             entity_type="Company",
-            details={"jw_similarity": sim},
+            details=details,
         )
