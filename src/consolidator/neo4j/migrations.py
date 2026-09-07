@@ -89,6 +89,29 @@ INDEX_CYPHER = [
     "FOR (c:Company) ON (c.last_consolidated_at)",
     "CREATE INDEX authority_last_consolidated IF NOT EXISTS "
     "FOR (a:Authority) ON (a.last_consolidated_at)",
+    # lei / cik / vat: the three hard-identifier dedup rules
+    # (_ExactIdRule subclasses) each run
+    #     MATCH (c:Company) WHERE c.<id> = $value AND c.gmr_id <> $self_id
+    # for every entity that carries the identifier. Unindexed, each of
+    # those is a NodeByLabelScan over the whole Company graph —
+    # 3,516,650 nodes in shared — and a company with all three pays it
+    # three times.
+    #
+    # These are the auto-merge rules (force_auto_merge = True), so they
+    # are also the ones that must run on every entity rather than being
+    # skippable. Measured on shared 2026-09-07: Neo4j pinned at 3,884m
+    # of a 4-core limit while the sweeper managed 6 companies/sec and
+    # the trigger 0.72 events/sec — a full sweep of the Company graph
+    # would have taken ~6.7 days, and the trigger's 7.07M-event backlog
+    # ~113 days.
+    #
+    # Same failure shape as consolidationrun_run_id above, which is
+    # what capped the trigger at 0.06 events/sec before it was added.
+    # Every property these rules match on was already indexed except
+    # the hard identifiers.
+    "CREATE INDEX company_lei IF NOT EXISTS FOR (c:Company) ON (c.lei)",
+    "CREATE INDEX company_cik IF NOT EXISTS FOR (c:Company) ON (c.cik)",
+    "CREATE INDEX company_vat IF NOT EXISTS FOR (c:Company) ON (c.vat)",
     # registered_as + country: the national business-register ID
     # (GLEIF RegistrationAuthorityEntityID), matched only alongside an
     # agreeing country because the number is unique per jurisdiction,
