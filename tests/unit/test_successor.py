@@ -83,7 +83,7 @@ async def test_resolve_carries_retired_lei_in_details():
     assert decision.rule_name == "successor_lei_match"
     assert decision.confidence == 0.98
     assert decision.details["retired_lei"] == "529900RETIREDXXXXXX2"
-    assert decision.details["corroborated_on"] == ["postal_code", "legal_form"]
+    assert decision.details["corroborated_on"] == ["postal_code"]
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ def test_postal_code_agreement_corroborates():
         {"postal_code": "811 09", "legal_form": "2EEG"},
         {"postal_code": "811 09", "legal_form": "2EEG"},
     )
-    assert corroborating_matches(a, c.entity) == ["postal_code", "legal_form"]
+    assert corroborating_matches(a, c.entity) == ["postal_code"]
 
 
 def test_postal_code_whitespace_is_normalised():
@@ -171,18 +171,42 @@ def test_postal_code_case_is_normalised():
     assert corroborating_matches(a, c.entity) == ["postal_code"]
 
 
-def test_legal_form_agreement_corroborates_when_postal_differs():
-    """FOKUS očná optika a. s. / a.s. (SVK) — postal 821 04 vs 832 57,
-    both legal form 2EEG. An entity that re-registers has often moved,
-    so postal disagreement alone must not veto the match."""
+def test_legal_form_never_corroborates_because_it_classifies():
+    """The regression that reached shared.
+
+    legal_form was accepted as a corroborator. It is a CATEGORY: OV32 is
+    the ELF code for an Italian S.R.L. and 157,598 Italian companies
+    carry it, so "both are an S.R.L." corroborated every pair of
+    same-named Italian companies in the country. 46 distinct
+    "FUTURA S.R.L." records in Reggio Emilia, Ancona and Pisa were
+    auto-merged into one entity at confidence 0.98, and 41
+    "ALBA S.R.L." alongside them — 7,873 of 12,148 successor edges
+    rested on legal_form alone.
+
+    Excluding only the 8888 "unknown" code was the wrong cut: a real ELF
+    code is exactly as non-discriminating as the unknown one. The test
+    for a corroborator is not "is it populated" but "could two different
+    companies share it".
+    """
     a, c = _pair(
-        {"postal_code": "821 04", "legal_form": "2EEG"},
-        {"postal_code": "832 57", "legal_form": "2EEG"},
+        {"postal_code": "42015", "legal_form": "OV32"},
+        {"postal_code": "56029", "legal_form": "OV32"},
     )
-    assert corroborating_matches(a, c.entity) == ["legal_form"]
+    assert not corroborating_matches(a, c.entity)
 
 
-def test_uninformative_legal_form_does_not_corroborate():
+def test_a_corroborator_must_distinguish_not_classify():
+    """Pins the principle against the whole configured set, so adding a
+    category attribute later fails here rather than in production."""
+    from src.consolidator.rules.company.successor import (
+        CORROBORATING_PROPERTIES)
+    assert "legal_form" not in CORROBORATING_PROPERTIES
+    assert set(CORROBORATING_PROPERTIES) == {
+        "postal_code", "vat", "registered_as", "cik",
+    }
+
+
+def test_uninformative_legal_form_does_not_corroborate():  # noqa: D401
     """TKM GROUP PENSION SCHEME (GBR) — postcodes CR0 2LX vs CR0 2BX,
     both legal_form 8888. 8888 is GLEIF's "form not on the ELF list"
     and the single most common value in the graph (328,131 Companies),
@@ -229,14 +253,25 @@ def test_whitespace_only_postal_never_corroborates():
     assert not corroborating_matches(a, c.entity)
 
 
-def test_disagreeing_values_do_not_corroborate():
+def test_disagreeing_postal_codes_do_not_corroborate():
     """ENERGY OPTIMAL s.r.o. (SVK) — postal 82102 vs 83106 genuinely
-    differ; only the legal form VSZS carries the match."""
+    differ. Sharing the legal form VSZS does not rescue it; this pair
+    goes to review."""
     a, c = _pair(
         {"postal_code": "82102", "legal_form": "VSZS"},
         {"postal_code": "83106", "legal_form": "VSZS"},
     )
-    assert corroborating_matches(a, c.entity) == ["legal_form"]
+    assert not corroborating_matches(a, c.entity)
+
+
+def test_a_hard_identifier_corroborates():
+    """vat / registered_as / cik do distinguish entities, so agreement
+    on one is real evidence even when the addresses differ."""
+    a, c = _pair(
+        {"postal_code": "82102", "vat": "SK2020317068"},
+        {"postal_code": "83106", "vat": "SK2020317068"},
+    )
+    assert corroborating_matches(a, c.entity) == ["vat"]
 
 
 # ---- resolve(): which branch a pair lands in ------------------------
