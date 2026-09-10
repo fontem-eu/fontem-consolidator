@@ -66,3 +66,107 @@ def test_human_never_claims_to_know_an_impossible_eta():
     assert sp._human(0) == "unknown"
     assert sp._human(-5) == "unknown"
     assert sp._human(86400 + 3600) == "1d 1h"
+
+
+def test_counts_asks_neo4j_once_and_unpacks_both_numbers(monkeypatch):
+    """One query for total and done together -- two round-trips could
+    straddle a sweeper write and report done > total."""
+    seen = {}
+
+    class _Result:
+        async def single(self):
+            return {"total": 4600950, "done": 26806}
+
+    class _Session:
+        async def run(self, query, **kw):
+            seen["query"] = query
+            seen["since"] = kw.get("since")
+            return _Result()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+    class _Driver:
+        def session(self, **_k):
+            return _Session()
+
+    async def _driver():
+        return _Driver()
+
+    monkeypatch.setattr(sp, "get_driver", _driver)
+    total, done = asyncio.run(sp._counts("Company", "2026-09-10T22:50:00Z"))
+    assert (total, done) == (4600950, 26806)
+    assert seen["since"] == "2026-09-10T22:50:00Z"
+    assert "MATCH (n:Company)" in seen["query"]
+
+
+def test_a_finished_pass_reports_complete_and_skips_sampling(monkeypatch):
+    """Nothing left to do means no reason to spend a sample window
+    measuring a rate nobody needs."""
+    sampled = []
+
+    async def _fake_counts(_label, _since):
+        return (100, 100)
+
+    async def _fake_rate(*_a):
+        sampled.append(1)
+        return 1.0
+
+    monkeypatch.setattr(sp, "_counts", _fake_counts)
+    monkeypatch.setattr(sp, "_measured_rate", _fake_rate)
+    asyncio.run(sp.report(["Company"], "2026-01-01T00:00:00Z", 5))
+    assert not sampled
+
+
+def test_report_computes_an_eta_from_the_observed_rate(monkeypatch):
+    async def _fake_counts(_label, _since):
+        return (1000, 100)
+
+    async def _fake_rate(*_a):
+        return 0.5           # 900 remaining / 0.5 = 1800s
+
+    monkeypatch.setattr(sp, "_counts", _fake_counts)
+    monkeypatch.setattr(sp, "_measured_rate", _fake_rate)
+    asyncio.run(sp.report(["Company"], "2026-01-01T00:00:00Z", 5))
+
+
+def test_main_wires_the_cli_and_always_closes_the_driver(monkeypatch):
+    """A leaked driver keeps the process alive, which turns a one-shot
+    reporting Job into one that never reaches Complete."""
+    closed = []
+    called = {}
+
+    async def _fake_report(labels, since, sample):
+        called["args"] = (labels, since, sample)
+
+    async def _fake_close():
+        closed.append(1)
+
+    monkeypatch.setattr(sp, "report", _fake_report)
+    monkeypatch.setattr(sp, "close_driver", _fake_close)
+    sp.main(["--since", "2026-09-10T22:50:00Z",
+             "--labels", "Company, Authority", "--sample-seconds", "7"])
+    assert called["args"] == (["Company", "Authority"],
+                              "2026-09-10T22:50:00Z", 7)
+    assert closed == [1]
+
+
+def test_the_driver_is_closed_even_when_reporting_raises(monkeypatch):
+    closed = []
+
+    async def _boom(*_a):
+        raise RuntimeError("neo4j went away")
+
+    async def _fake_close():
+        closed.append(1)
+
+    monkeypatch.setattr(sp, "report", _boom)
+    monkeypatch.setattr(sp, "close_driver", _fake_close)
+    try:
+        sp.main(["--since", "2026-01-01T00:00:00Z"])
+    except RuntimeError:
+        pass
+    assert closed == [1]
