@@ -76,13 +76,22 @@ UNINFORMATIVE_LEGAL_FORM = "8888"
 
 
 def _normalise_postal(value: str | None) -> str | None:
-    """Postal codes for one address are written inconsistently across
-    GLEIF records — "82109" and "821 09" are the same Slovak code, and
-    comparing them raw loses real corroboration. Case-fold and drop
-    whitespace."""
+    """Case-fold and strip every separator, not just whitespace.
+
+    Postal codes for one address are written inconsistently across GLEIF
+    records. "82109" and "821 09" are the same Slovak code; "2790-072"
+    and "2790 072" are the same Portuguese one. An earlier version
+    dropped whitespace only, so the hyphenated form failed to match its
+    spaced twin and WARPCOM SERVICES, S.A. looked uncorroborated when it
+    was not.
+
+    Keeping only alphanumerics is safe here because the comparison is
+    equality between two codes for the same country — no separator
+    carries meaning that the digits and letters do not.
+    """
     if not value:
         return None
-    stripped = "".join(value.split()).upper()
+    stripped = "".join(ch for ch in value.upper() if ch.isalnum())
     return stripped or None
 
 

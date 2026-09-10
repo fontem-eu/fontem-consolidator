@@ -165,6 +165,22 @@ def test_postal_code_whitespace_is_normalised():
     assert corroborating_matches(a, c.entity) == ["postal_code"]
 
 
+def test_postal_code_separators_are_normalised():
+    """WARPCOM SERVICES, S.A. (PRT) — "2790-072" on one record and
+    "2790 072" on the other. Stripping whitespace alone left them
+    unequal, so a genuinely corroborated pair looked uncorroborated and
+    would have been retracted as a bad merge."""
+    a, c = _pair({"postal_code": "2790-072"}, {"postal_code": "2790 072"})
+    assert corroborating_matches(a, c.entity) == ["postal_code"]
+
+
+def test_postal_code_separators_do_not_make_different_codes_equal():
+    """Stripping separators must not collapse genuinely different
+    codes — CR0 2LX and CR0 2BX are different UK postcodes."""
+    a, c = _pair({"postal_code": "CR0 2LX"}, {"postal_code": "CR0 2BX"})
+    assert not corroborating_matches(a, c.entity)
+
+
 def test_postal_code_case_is_normalised():
     """GBR codes appear in both cases across GLEIF records."""
     a, c = _pair({"postal_code": "dn14 6al"}, {"postal_code": "DN14 6AL"})
