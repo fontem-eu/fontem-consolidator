@@ -31,8 +31,17 @@ contributed no precision.
 
 Corroboration instead
 ---------------------
-A second attribute has to agree: postal code or legal form. That is a
-real same-entity signal rather than a coincidence of issuer.
+A second attribute has to agree, and it has to be one that
+DISTINGUISHES entities rather than classifying them: postal code, or a
+hard identifier (vat / registered_as / cik) when present.
+
+legal_form was accepted here at first and that was a mistake. It is a
+category: OV32 is the ELF code for an Italian S.R.L. and 157,598
+Italian companies carry it, so "both are an S.R.L." corroborated every
+pair of same-named Italian companies in the country. It merged 46
+distinct "FUTURA S.R.L." records across Reggio Emilia, Ancona and Pisa
+into one entity. The test for a corroborator is not "is it populated"
+but "could two different companies share it".
 
   * 83 of those 124 pairs (67%) are corroborated → auto-merge
   * the remaining 41 are flagged for review instead of merged
@@ -60,36 +69,50 @@ separates "predecessor" from "sibling", and it is load-bearing here.
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 #: GLEIF's ELF code for "entity legal form not on the ELF code list" —
-#: i.e. unknown. It is the single most common value in the graph
-#: (328,131 Companies in shared, ahead of every real form), so two
-#: entities sharing it is not evidence of anything and must not count
-#: as corroboration. Every GBR trust carries it.
+#: i.e. unknown. Kept for the docstring below and for anyone reading the
+#: history: it was once excluded as a special case, which missed the
+#: real problem.
 UNINFORMATIVE_LEGAL_FORM = "8888"
 
 
 def _normalise_postal(value: str | None) -> str | None:
     """Postal codes for one address are written inconsistently across
     GLEIF records — "82109" and "821 09" are the same Slovak code, and
-    comparing them raw loses real corroboration (8 pairs of 181 in
-    shared). Case-fold and drop whitespace."""
+    comparing them raw loses real corroboration. Case-fold and drop
+    whitespace."""
     if not value:
         return None
     stripped = "".join(value.split()).upper()
     return stripped or None
 
 
-def _informative_legal_form(value: str | None) -> str | None:
-    if not value or value == UNINFORMATIVE_LEGAL_FORM:
-        return None
-    return value
+def _identifier(value: str | None) -> str | None:
+    return value or None
 
 
-#: Attributes that can corroborate a successor match, each with the
-#: normaliser that decides what "agrees" means for it. A property whose
-#: normaliser returns None contributes nothing.
+#: What may corroborate a successor match, with the normaliser that
+#: decides what "agrees" means for each.
+#:
+#: Every entry must DISTINGUISH entities, not classify them. legal_form
+#: was here and was wrong: it is a category. OV32 is the ELF code for an
+#: Italian S.R.L. and 157,598 Italian companies carry it, so "both are
+#: an S.R.L." corroborated every pair of same-named Italian companies in
+#: the country. Shared 2026-09-09: 46 distinct "FUTURA S.R.L." records
+#: in Reggio Emilia, Ancona and Pisa (postal 42015 / 60030 / 56029 /
+#: 56038) were auto-merged into one entity at confidence 0.98, along
+#: with 41 "ALBA S.R.L.". 7,873 of 12,148 successor edges rested on
+#: legal_form alone.
+#:
+#: Excluding the 8888 "unknown" code was not enough and was the wrong
+#: cut: a real ELF code is just as non-discriminating as the unknown
+#: one. The test for a corroborator is not "is it populated" but "could
+#: two different companies share it" — and for any legal form, in any
+#: jurisdiction, the answer is yes for thousands of them.
 CORROBORATING_PROPERTIES: dict[str, object] = {
     "postal_code": _normalise_postal,
-    "legal_form": _informative_legal_form,
+    "vat": _identifier,
+    "registered_as": _identifier,
+    "cik": _identifier,
 }
 
 
@@ -97,8 +120,7 @@ def corroborating_matches(entity: Entity, candidate: Entity) -> list[str]:
     """Which corroborating attributes are present on both and agree.
 
     A missing value never corroborates: absent is not agreement, and two
-    nulls are not evidence. Neither is a value the normaliser rejects as
-    uninformative.
+    nulls are not evidence.
     """
     agreed = []
     for prop, normalise in CORROBORATING_PROPERTIES.items():
