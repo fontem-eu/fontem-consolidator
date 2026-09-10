@@ -15,8 +15,16 @@ The old worry here was `produceSelfRel` — a merge turned the SAME_AS
 edge BETWEEN the pair into a self-loop on the survivor, and 571 had
 accumulated by 2026-09-02. That whole class of bug is gone with the
 merges.
+
+:SAME_AS itself is back (fontem-neo4j-sink#148): the read path resolves
+an identity class by traversing it, which is what nothing in Neo4j used
+to do. Written by the SINK from AssertSameAs, never by the consolidator
+— so it stays derivable from the event log — and never deleted on
+startup, which is the trap the last test here guards.
 """
 import pathlib
+
+from src.consolidator.neo4j import migrations
 
 
 def _sources():
@@ -37,19 +45,42 @@ def test_nothing_merges_nodes():
     )
 
 
-def test_nothing_writes_a_same_as_edge():
-    """A :SAME_AS edge in Neo4j is a second copy of a fact Virtuoso
-    already holds, and nothing in Neo4j follows it. Candidates and
-    corrections are workflow and stay."""
+def test_the_consolidator_never_writes_a_same_as_edge_itself():
+    """:SAME_AS is back in Neo4j — the read path traverses it to resolve
+    an identity class — but the consolidator still must not write it.
+
+    It emits AssertSameAs; the neo4j sink renders the edge. That is what
+    keeps the edge derivable from the event log, so a replay from seq 0
+    reconstructs identity instead of leaving whatever a sweep happened
+    to write. A consolidator that wrote the edge directly would also be
+    writing it for pairs it has only PROPOSED, which is the distinction
+    :SAME_AS_CANDIDATE exists to hold.
+    """
     offenders = []
     for path, text in _sources():
-        # The migration that DELETES the legacy edges necessarily names
-        # the type it is removing.
-        if path.name == "migrations.py":
-            continue
         for line in text.splitlines():
             if "SAME_AS_CANDIDATE" in line or "NOT_SAME_AS" in line:
                 continue
             if "[r:SAME_AS]" in line or "[:SAME_AS]" in line:
                 offenders.append(f"{path}: {line.strip()}")
     assert not offenders, offenders
+
+
+def test_startup_does_not_delete_same_as_edges():
+    """The landmine. BACKFILL_CYPHER runs in full on EVERY startup, from
+    both the sweeper and the consolidator API, and it used to end by
+    deleting every :SAME_AS in the graph.
+
+    That was correct while Neo4j held no equivalences. Now the sink
+    writes them and the read path traverses them, so leaving it in would
+    wipe identity on the next pod restart — silently, with every company
+    and authority page quietly reverting to one record's contracts and
+    no error anywhere to explain it.
+    """
+    for stmt in migrations.BACKFILL_CYPHER:
+        if "DELETE r" not in stmt:
+            continue
+        # The self-loop sweep is still right, and names both types.
+        assert "SAME_AS_CANDIDATE" in stmt, (
+            f"a startup migration deletes :SAME_AS edges: {stmt.strip()}"
+        )
