@@ -45,28 +45,26 @@ from loguru import logger
 
 from src.config import settings
 from src.consolidator import eventlog
+from src.consolidator.actions import entity_iri
 from src.consolidator.neo4j.client import close_driver, get_driver
-
-_IRI = "http://data.fontem.eu/id"
 
 #: Approved equivalences that Neo4j can still address, with the pair's
 #: own correction edge excluded. Ordered so a re-run emits the same
 #: sequence, which makes a partial run resumable by inspection.
-_FIND = f"""
-MATCH (a)-[r:SAME_AS_CANDIDATE {{status: 'approved'}}]->(b)
-WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
+_FIND = """
+MATCH (a)-[r:SAME_AS_CANDIDATE {status: 'approved'}]->(b)
+WHERE NOT EXISTS { (a)-[:NOT_SAME_AS]-(b) }
   AND labels(a)[0] = labels(b)[0]
   AND elementId(a) <> elementId(b)
 WITH a, b, r, labels(a)[0] AS label,
      coalesce(a.gmr_id, a.authority_id, a.person_id) AS ak,
      coalesce(b.gmr_id, b.authority_id, b.person_id) AS bk
 WHERE ak IS NOT NULL AND bk IS NOT NULL AND ak <> bk
-RETURN '{_IRI}/' + label + '/' + ak AS a_iri,
-       '{_IRI}/' + label + '/' + bk AS b_iri,
+RETURN label, ak, bk,
        coalesce(r.confidence, 1.0) AS confidence,
        coalesce(r.method, 'backfill') AS method,
        r.rule AS rule
-ORDER BY a_iri, b_iri
+ORDER BY label, ak, bk
 """
 
 
@@ -75,11 +73,23 @@ async def find_approved() -> list[dict]:
     driver = await get_driver()
     async with driver.session(database=settings.neo4j_database) as session:
         result = await session.run(_FIND)
-        rows = [dict(r) async for r in result]
-    for row in rows:
-        # domain is the event envelope's, not the payload's; the
-        # consolidator emits every equivalence under one domain.
-        row["domain"] = "consolidation"
+        raw = [dict(r) async for r in result]
+    rows = []
+    for r in raw:
+        rows.append({
+            # Minted by the shared helper, not concatenated in Cypher:
+            # the sink parses these IRIs straight back into (label, key)
+            # to find the nodes, so a scheme that drifts from the one
+            # actions.py mints is an edge that silently never appears.
+            "a_iri": entity_iri(r["label"], r["ak"]),
+            "b_iri": entity_iri(r["label"], r["bk"]),
+            "confidence": r["confidence"],
+            "method": r["method"],
+            "rule": r["rule"],
+            # domain is the event envelope's, not the payload's; the
+            # consolidator emits every equivalence under one domain.
+            "domain": "consolidation",
+        })
     return rows
 
 

@@ -14,6 +14,7 @@ one of those back and leave the graph contradicting its own
 # *a/**k are the protocol shape, not something a stub reads.
 # pylint: disable=protected-access,unused-argument
 from src.consolidator import backfill_same_as as bf
+from src.consolidator.actions import entity_iri
 
 
 def test_only_approved_candidates_are_asserted():
@@ -55,17 +56,67 @@ def test_keyless_nodes_are_excluded():
     assert "ak IS NOT NULL AND bk IS NOT NULL" in bf._FIND
 
 
-def test_the_iri_is_built_from_the_label_and_key():
-    """The sink parses IRIs back into (label, key) to find the nodes, so
-    a malformed IRI here is an edge that silently never appears."""
-    assert "'http://data.fontem.eu/id/' + label + '/' + ak" in bf._FIND
-    assert "'http://data.fontem.eu/id/' + label + '/' + bk" in bf._FIND
+def test_the_iri_comes_from_the_shared_minting_helper():
+    """The sink parses IRIs straight back into (label, key) to find the
+    nodes, so a scheme that drifts from the one actions.py mints is an
+    edge that silently never appears. Concatenating it in Cypher would
+    be a second copy of that scheme, free to drift."""
+    assert bf.entity_iri is entity_iri
+    assert "data.fontem.eu" not in bf._FIND
+    assert entity_iri("Company", "abc") == \
+        "http://data.fontem.eu/id/Company/abc"
 
 
 def test_ordered_so_a_partial_run_is_legible():
     """The emit is batched and can stop part-way; a stable order means
     what landed is a prefix rather than an arbitrary subset."""
-    assert "ORDER BY a_iri, b_iri" in bf._FIND
+    assert "ORDER BY label, ak, bk" in bf._FIND
+
+
+def test_rows_carry_the_shape_the_emitter_expects():
+    """find_approved feeds emit_assert_same_as_many directly, and that
+    builds the event payload from these exact keys."""
+    import asyncio  # pylint: disable=import-outside-toplevel
+
+    class _Rec(dict):
+        pass
+
+    async def _fake_session_rows():
+        yield _Rec(label="Company", ak="aaa", bk="bbb",
+                   confidence=0.9, method="lei_match", rule="r1")
+
+    class _Result:
+        def __aiter__(self):
+            return _fake_session_rows()
+
+    class _Session:
+        async def run(self, *_a, **_k):
+            return _Result()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+    class _Driver:
+        def session(self, **_k):
+            return _Session()
+
+    async def _go():
+        bf.get_driver = _fake_driver
+        return await bf.find_approved()
+
+    async def _fake_driver():
+        return _Driver()
+
+    rows = asyncio.run(_go())
+    assert rows == [{
+        "a_iri": "http://data.fontem.eu/id/Company/aaa",
+        "b_iri": "http://data.fontem.eu/id/Company/bbb",
+        "confidence": 0.9, "method": "lei_match", "rule": "r1",
+        "domain": "consolidation",
+    }]
 
 
 def test_dry_run_emits_nothing(monkeypatch):
