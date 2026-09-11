@@ -1,5 +1,6 @@
 from loguru import logger
 from neo4j import AsyncDriver
+from neo4j.exceptions import ClientError
 
 # Dimensionality of the authority_name_embedding_idx vector index.
 # MUST match the dim of the embedding backend the enrichment rule is
@@ -206,11 +207,39 @@ async def _drop_stale_vector_index(session) -> None:
         await session.run("DROP INDEX authority_name_embedding_idx")
 
 
+#: What CREATE ... IF NOT EXISTS raises when a concurrent session created
+#: the same schema rule first: the existence check is not atomic with the
+#: create. Both consolidator replicas and the sweeper run apply() at
+#: startup, so when a node restart brings them up together one of them
+#: used to lose the race and exit 1 (seen on prod 2026-09-10, company_cik).
+#: The rule it asked for exists, which is the outcome it wanted.
+_CREATED_CONCURRENTLY = frozenset({
+    "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists",
+    "Neo.ClientError.Schema.IndexAlreadyExists",
+    "Neo.ClientError.Schema.ConstraintAlreadyExists",
+})
+
+
+async def _ensure(driver: AsyncDriver, database: str, stmt: str) -> None:
+    # One session per statement, so a statement that lost the race leaves
+    # nothing behind for the next one to trip over.
+    async with driver.session(database=database) as session:
+        try:
+            await session.run(stmt)
+        except ClientError as exc:
+            if exc.code not in _CREATED_CONCURRENTLY:
+                raise
+            logger.info(
+                "consolidator: created concurrently by another starter: {}",
+                stmt.split(" IF NOT EXISTS", 1)[0],
+            )
+
+
 async def apply(driver: AsyncDriver, database: str) -> None:
     async with driver.session(database=database) as session:
         await _drop_stale_vector_index(session)
-        for stmt in INDEX_CYPHER:
-            await session.run(stmt)
+    for stmt in INDEX_CYPHER:
+        await _ensure(driver, database, stmt)
     logger.info(
         "consolidator: neo4j indexes ensured ({} statements)",
         len(INDEX_CYPHER),

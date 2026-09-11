@@ -21,6 +21,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 
 from src.consolidator import sweeper
 from src.consolidator.engine import ConsolidationResult
@@ -435,3 +436,91 @@ def test_main_runs_the_sweeper_loop():
         sweeper.main()
     coro.assert_called_once_with()
     asyncio_run.assert_called_once_with(sentinel)
+
+
+# --------------------------------------------------------------------------
+# Restart safety: only a completed evaluation is stamped
+# --------------------------------------------------------------------------
+_STORE_FAILURES = [
+    ServiceUnavailable("neo4j restarting"),
+    SessionExpired("leader moved"),
+    Neo4jError._hydrate_neo4j(  # pylint: disable=protected-access
+        code="Neo.TransientError.General.MemoryPoolOutOfMemoryError",
+        message="pool exhausted",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _STORE_FAILURES, ids=lambda e: type(e).__name__)
+async def test_a_store_failure_is_not_stamped_and_the_page_is_retried(failure):
+    """The stamp is what the next page reads as done. Stamping an entity
+    Neo4j failed to evaluate would skip it for a whole rotation -- about
+    two weeks for Company -- so it stays stale, the loop backs off, and
+    the next page starts with it again."""
+    stop = asyncio.Event()
+    pages = []
+
+    async def fake_page(*_a, **_k):
+        pages.append(1)
+        if len(pages) == 1:
+            return ["a", "b"]
+        stop.set()
+        return []
+
+    consolidate = AsyncMock(side_effect=failure)
+    stamp = AsyncMock()
+    sleep = AsyncMock()
+
+    with patch.object(sweeper, "_page_stalest", fake_page), patch.object(
+        sweeper, "_measure_lag", AsyncMock(return_value=0.0)
+    ), patch.object(sweeper, "_stamp", stamp), patch.object(
+        sweeper.engine, "consolidate", consolidate
+    ), patch.object(sweeper, "_interruptible_sleep", sleep):
+        await sweeper.sweep_label(
+            AsyncMock(), "neo4j", "Company",
+            stop_event=stop, page_size=200, rate=0.0, empty_backoff_s=5.0,
+        )
+
+    stamp.assert_not_awaited()
+    # The rest of the page would fail the same way, so it is abandoned...
+    assert consolidate.await_count == 1
+    # ...after a back-off, and re-paged.
+    sleep.assert_any_await(stop, 5.0)
+    assert len(pages) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_store_failure_is_counted_as_retry():
+    with patch.object(sweeper, "_stamp", AsyncMock()), patch.object(
+        sweeper.engine, "consolidate", AsyncMock(side_effect=ServiceUnavailable("x"))
+    ):
+        outcome = await sweeper._sweep_one(  # pylint: disable=protected-access
+            AsyncMock(), "neo4j", "Company", "gmr_id", "a",
+        )
+    assert outcome == sweeper.RETRY
+
+
+@pytest.mark.asyncio
+async def test_sigterm_mid_evaluation_does_not_stamp():
+    """A node drain cancels the task while an entity is being evaluated.
+    Stamping it on the way out would mark it done unevaluated; left
+    stale, it is the first entity swept after the restart."""
+    started = asyncio.Event()
+
+    async def hang(*_a, **_k):
+        started.set()
+        await asyncio.Event().wait()
+
+    stamp = AsyncMock()
+    with patch.object(sweeper, "_stamp", stamp), patch.object(
+        sweeper.engine, "consolidate", hang
+    ):
+        task = asyncio.create_task(sweeper._sweep_one(  # pylint: disable=protected-access
+            AsyncMock(), "neo4j", "Company", "gmr_id", "a",
+        ))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    stamp.assert_not_awaited()
