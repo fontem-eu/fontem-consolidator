@@ -23,6 +23,9 @@ match-only consolidation pipeline on each id, then stamps
 cursor: it lives on the node, so the sweep resumes exactly where it
 left off across pod restarts, and once every node carries a fresh
 stamp the oldest-first order naturally cycles back to the start.
+Only a completed evaluation is stamped (see ``_sweep_one``): a Neo4j
+outage or a SIGTERM mid-evaluation leaves the entity stale, so it is
+the first one picked up again rather than skipped for a rotation.
 
 Match-only, no GDS
 ------------------
@@ -52,6 +55,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 from neo4j import AsyncDriver
+from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 from prometheus_client import Counter, Gauge, start_http_server
 
 from src.config import settings
@@ -204,14 +208,35 @@ async def _interruptible_sleep(stop_event: asyncio.Event, seconds: float) -> Non
         pass
 
 
+#: Failures of the store, not of the entity. ServiceUnavailable and
+#: SessionExpired are Neo4j down or moving (a node drain reschedules it);
+#: TransientError is Neo4j shedding load -- lock timeouts, memory-pool
+#: exhaustion. The same entity succeeds once the store is back.
+_STORE_FAILURES = (ServiceUnavailable, SessionExpired, TransientError)
+
+#: Outcome of an entity left unstamped because the store failed.
+RETRY = "retry"
+
+
 async def _sweep_one(
     driver: AsyncDriver, database: str, label: str, key: str, entity_id: str
 ) -> str:
     """Re-consolidate one entity (match-only, GDS-excluded) and stamp the
-    rotation cursor. Never raises: a poison entity is logged and STILL
-    stamped so the cursor advances past it on the next page. Returns the
-    coarse outcome for the metric ("merged"/"flagged"/.../"error")."""
-    outcome = "error"
+    rotation cursor. Returns the coarse outcome for the metric
+    ("merged"/"flagged"/.../"error"/"retry").
+
+    Only a completed evaluation is stamped. The stamp is what the next
+    page -- and the next pod, after a restart -- reads as "done", so a
+    stamp on anything else skips the entity for a whole rotation:
+
+      * a poison entity (the rules themselves raise) IS stamped, or it
+        would sit at the head of every page forever;
+      * a store failure is NOT: the entity is fine, Neo4j was not. It is
+        returned as RETRY and stays the stalest, so it comes first again;
+      * cancellation -- SIGTERM when the node drains -- propagates without
+        stamping, so the entity interrupted mid-evaluation is the first
+        one swept after the restart.
+    """
     try:
         result = await engine.consolidate(
             driver,
@@ -223,21 +248,28 @@ async def _sweep_one(
             mode="match_only",
         )
         outcome = _classify(result)
+    except _STORE_FAILURES as exc:
+        logger.warning(
+            "sweeper[{label}]: Neo4j unavailable consolidating {id} ({err}); "
+            "leaving it unstamped",
+            label=label, id=entity_id, err=repr(exc),
+        )
+        return RETRY
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning(
             "sweeper[{label}]: consolidate failed for {id} ({err}); continuing",
             label=label, id=entity_id, err=repr(exc),
         )
-    finally:
-        try:
-            await _stamp(driver, database, label, key, entity_id)
-        # If even the stamp fails the entity stays stale and is retried
-        # next rotation — acceptable, just log it.
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning(
-                "sweeper[{label}]: stamp failed for {id} ({err})",
-                label=label, id=entity_id, err=repr(exc),
-            )
+        outcome = "error"
+    try:
+        await _stamp(driver, database, label, key, entity_id)
+    # If the stamp fails the entity stays the stalest and is retried on
+    # the next page -- acceptable, just log it.
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "sweeper[{label}]: stamp failed for {id} ({err})",
+            label=label, id=entity_id, err=repr(exc),
+        )
     return outcome
 
 
@@ -290,6 +322,12 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
             await pacer.wait()
             outcome = await _sweep_one(driver, database, label, key, entity_id)
             SWEEP_ENTITIES.labels(label=label, outcome=outcome).inc()
+            if outcome == RETRY:
+                # The rest of the page would fail the same way. Back off
+                # and re-page: the unstamped entity is still the stalest,
+                # so the new page starts with it.
+                await _interruptible_sleep(stop_event, empty_backoff_s)
+                break
 
 
 async def run(config: SweeperConfig | None = None) -> None:
