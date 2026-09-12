@@ -39,6 +39,15 @@ jobs:
     runs-on: python
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history, or SonarQube cannot date a line and treats the
+          # whole project as new code: it then measures new-coverage and
+          # new-violations over every file, and the gate fails on code
+          # nobody in the PR touched. That is what happened here — a
+          # trigger-only change was failed by new_coverage = 82.6 (the
+          # project's overall figure) and three violations in files last
+          # edited in April.
+          fetch-depth: 0
       - name: Install + coverage
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
