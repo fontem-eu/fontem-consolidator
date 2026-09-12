@@ -19,6 +19,7 @@ table is per-consumer-name.
 import logging
 
 from .consumer import ConsolidatorTrigger
+from .shutdown import install_stop_handlers
 
 
 def main() -> None:
@@ -26,6 +27,10 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # As PID 1 an unregistered SIGTERM is ignored outright, so without
+    # this the pod only ever dies on SIGKILL and stalls every node
+    # drain. The sweeper already stops cleanly; see .shutdown.
+    install_stop_handlers()
     trigger = ConsolidatorTrigger.from_env()
     trigger.run_forever()
 
