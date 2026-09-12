@@ -6,7 +6,7 @@ fastapi==0.141.1
 # (`>=0.46.0` only), so the pin is compatible.
 starlette==0.52.1
 uvicorn[standard]==0.52.4
-neo4j==6.2.0
+neo4j==6.3.0
 graphdatascience==1.22
 loguru==0.7.3
 pydantic==2.13.4
