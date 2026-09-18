@@ -1,6 +1,7 @@
 """Authority-entity rules. Authorities are TED buyers (public bodies)."""
 
 import re
+import unicodedata
 
 from rapidfuzz.distance import JaroWinkler
 
@@ -10,6 +11,45 @@ from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]')
 _PUNCT = re.compile(r"[^\w\s]")
 _SPACES = re.compile(r"\s+")
+
+
+# A name that IS an EU institution, agency or body — the thing TED
+# publishes once per destination country. Anchored at the start on
+# purpose: "Ministry of Foreign and European Affairs" (HR, SK) and
+# "Ministère des Affaires étrangères et européennes" (FR, LU) mention
+# Europe but are national ministries with twins in other countries.
+_SUPRANATIONAL_NAME = re.compile(
+    r"^(EUROPEAN|COMMISSION EUROPEENNE|PARLEMENT EUROPEEN|"
+    r"COUNCIL OF THE EUROPEAN UNION|CONSEIL DE L UNION EUROPEENNE|"
+    r"JOINT RESEARCH CENTRE|EU LISA|EEAS|FRONTEX|EUROPOL|EUROJUST|"
+    r"CEDEFOP|EUROFOUND|OLAF)\b"
+)
+
+# TED gives France's overseas departments and collectivities their own
+# country codes; an authority there and one in FRA with the same name is
+# one French public body recorded twice.
+_FRANCE_AND_OVERSEAS = frozenset({
+    "FRA", "GLP", "MTQ", "GUF", "REU", "MYT", "SPM", "BLM", "MAF",
+    "WLF", "PYF", "NCL", "ATF",
+})
+
+
+def _ascii_upper(name: str) -> str:
+    """Upper-case, accents folded, punctuation to spaces, spaces collapsed."""
+    folded = unicodedata.normalize("NFKD", name)
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return _SPACES.sub(" ", _PUNCT.sub(" ", folded.upper())).strip()
+
+
+def _same_body_across_countries(name: str, country_a: str | None, country_b: str | None) -> bool:
+    """Whether an exact name match across two countries can only be one
+    body: an EU institution, or France and one of its overseas territories.
+    Anything else — "Ministry of Foreign Affairs", "Finanstilsynet",
+    "Department of Transport", "UM" — is as likely two institutions that
+    happen to share a name."""
+    if _SUPRANATIONAL_NAME.match(_ascii_upper(name)):
+        return True
+    return country_a in _FRANCE_AND_OVERSEAS and country_b in _FRANCE_AND_OVERSEAS
 
 
 def _normalise_authority(name: str) -> str:
@@ -134,10 +174,11 @@ class ExactNameAnyCountryAuthority(Rule):
     contracting-destination country and end up as N duplicate authority
     nodes with the same name but different `country` values.
 
-    Match on apoc.text.clean(name) alone. We flag (never auto-merge)
-    because occasionally two entities with an identical exact name in
-    different countries are genuinely different institutions — a human
-    decides.
+    Match on apoc.text.clean(name) alone. Only pairs that can only be one
+    body — an EU institution, or France and an overseas territory — keep
+    the confidence that auto-merges; every other pair is flagged below the
+    threshold for a human, because two institutions in different countries
+    often share a name.
     """
     name = "exact_name_any_country_authority"
     description = (
@@ -150,11 +191,16 @@ class ExactNameAnyCountryAuthority(Rule):
     action = "flag"
     # Canary on 1k authorities surfaced 32 of these — every one was a
     # European Commission DG (DG COMM, FPI, INTPA) registered per
-    # delegation country. Zero false positives. Promote to auto-merge
-    # at the rule's flat 0.90 confidence; the conflict gate (handled in
-    # the engine upgrade logic) still drops anything with a hard ID
-    # mismatch back to flag-for-review.
+    # delegation country — so the rule was promoted to auto-merge at a
+    # flat 0.90. The first prod sweep (2026-09-18) showed what 1k
+    # authorities could not: about one cross-country pair in ten outside
+    # the EU bodies was two different institutions with one name — the
+    # Danish, Dutch, Maltese and Norwegian "Ministry of Foreign Affairs",
+    # the Belgian and French "Ministère de la Défense", the Irish and UK
+    # "Department of Transport", Romania's and Moldova's border police.
+    # Those now resolve at REVIEW_CONFIDENCE, under the threshold.
     auto_merge_threshold = 0.90
+    review_confidence = 0.80
 
     async def applies(self, entity: Entity) -> bool:
         return bool(entity.properties.get("name"))
@@ -189,17 +235,23 @@ class ExactNameAnyCountryAuthority(Rule):
         ]
 
     async def resolve(self, entity: Entity, candidate: Candidate) -> Decision:
+        source_country = entity.properties.get("country")
+        target_country = candidate.entity.properties.get("country")
+        same_body = _same_body_across_countries(
+            entity.properties.get("name") or "", source_country, target_country,
+        )
         return Decision(
             rule_name=self.name,
             action="flag",
             source_id=entity.id,
             target_id=candidate.entity.id,
-            confidence=self.confidence,
+            confidence=self.confidence if same_body else self.review_confidence,
             entity_type="Authority",
             details={
                 "cross_country": True,
-                "source_country": entity.properties.get("country"),
-                "target_country": candidate.entity.properties.get("country"),
+                "source_country": source_country,
+                "target_country": target_country,
+                "same_body_across_countries": same_body,
             },
         )
 
