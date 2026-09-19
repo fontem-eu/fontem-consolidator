@@ -2,6 +2,12 @@
 would have written had it seen both from the same side."""
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from src.consolidator import dedupe_two_way as dd
 from src.consolidator.dedupe_two_way import merge_pair
 
 
@@ -88,3 +94,142 @@ def test_merging_is_symmetric():
     ka, pa = merge_pair(a, b)
     kb, pb = merge_pair(b, a)
     assert pa == pb and ka != kb
+
+
+# --------------------------------------------------------------------------
+# The command around merge_pair: reads, batches, the optimistic write.
+# --------------------------------------------------------------------------
+class _Result:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __aiter__(self):
+        self._it = iter(self._rows)  # pylint: disable=attribute-defined-outside-init
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+    async def single(self):
+        return self._rows[0] if self._rows else None
+
+
+class _Graph:
+    """Two-way pairs held in memory; answers the command's four queries."""
+
+    def __init__(self, pairs, *, fold_nothing=False, same_as=0):
+        self.pairs = list(pairs)
+        self.fold_nothing = fold_nothing
+        self.same_as = same_as
+        self.writes = 0
+
+    def run(self, query, **params):
+        if "RETURN elementId(r1) AS id1" in query:
+            rows = self.pairs[: params["batch"]] if params.get("batch") else list(self.pairs)
+            return _Result(rows)
+        if "UNWIND $rows" in query:
+            self.writes += 1
+            if self.fold_nothing:
+                return _Result([{"folded": 0}])
+            done = {r["keep"] for r in params["rows"]} | {r["drop"] for r in params["rows"]}
+            before = len(self.pairs)
+            self.pairs = [p for p in self.pairs if p["id1"] not in done]
+            return _Result([{"folded": before - len(self.pairs)}])
+        if ":SAME_AS]" in query:
+            dry = "RETURN count(*) AS pairs" in query
+            n, self.same_as = self.same_as, (self.same_as if dry else 0)
+            return _Result([[n]])
+        raise AssertionError(query)
+
+
+class _Driver:
+    def __init__(self, graph):
+        self.graph = graph
+
+    def session(self, database=None):  # pylint: disable=unused-argument
+        graph = self.graph
+
+        class _S:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+            async def run(self, query, **params):
+                return graph.run(query, **params)
+        return _S()
+
+
+def _edge(rule, date, status):
+    return {"status": status, "detection_rules": [rule], "detection_confidences": [0.95],
+            "detection_dates": [date], "method": rule, "confidence": 0.95, "detected_at": date,
+            "conflict": False}
+
+
+def _pair(i, s1="pending", s2="pending"):
+    return {"id1": f"r{i}a", "p1": _edge("rule_a", "2026-09-18T10:00:00", s1),
+            "id2": f"r{i}b", "p2": _edge("rule_b", "2026-09-18T11:00:00", s2)}
+
+
+def test_a_dry_run_reads_everything_and_writes_nothing():
+    graph = _Graph([_pair(i) for i in range(5)] + [_pair(9, "approved", "approved")])
+    stats = asyncio.run(dd.fold_candidates(_Driver(graph), "neo4j", batch=2, dry_run=True))
+    assert stats["pairs"] == 6 and stats["folded"] == 0
+    assert stats["both_approved"] == 1 and stats["kept_approved"] == 1
+    assert graph.writes == 0 and len(graph.pairs) == 6
+
+
+def test_a_run_folds_batch_by_batch_until_none_are_left():
+    graph = _Graph([_pair(i) for i in range(5)])
+    stats = asyncio.run(dd.fold_candidates(_Driver(graph), "neo4j", batch=2, dry_run=False))
+    assert stats["folded"] == 5 and not graph.pairs
+    assert graph.writes == 3  # 2 + 2 + 1
+
+
+def test_a_pass_that_folds_nothing_stops_rather_than_spinning():
+    """Everything left changed underneath (the optimistic check refused it):
+    leave it for a re-run."""
+    graph = _Graph([_pair(i) for i in range(3)], fold_nothing=True)
+    stats = asyncio.run(dd.fold_candidates(_Driver(graph), "neo4j", batch=10, dry_run=False))
+    assert stats["folded"] == 0 and graph.writes == 1
+
+
+def test_write_rows_carry_what_was_read_for_the_optimistic_check():
+    rows, _ = dd._plan([_pair(1, "pending", "approved")])  # pylint: disable=protected-access
+    row = rows[0]
+    assert (row["keep"], row["drop"]) == ("r1b", "r1a")  # the approved one stays
+    assert row["keep_status"] == "approved" and row["drop_status"] == "pending"
+    assert row["keep_dates"] == ["2026-09-18T11:00:00"]
+    assert row["drop_dates"] == ["2026-09-18T10:00:00"]
+
+
+def test_same_as_pairs_are_counted_on_a_dry_run_and_folded_on_a_run():
+    graph = _Graph([], same_as=15)
+    assert asyncio.run(dd.fold_same_as(_Driver(graph), "neo4j", dry_run=True)) == 15
+    assert graph.same_as == 15
+    assert asyncio.run(dd.fold_same_as(_Driver(graph), "neo4j", dry_run=False)) == 15
+    assert graph.same_as == 0
+
+
+def test_run_reports_and_always_closes_the_driver():
+    graph = _Graph([_pair(1)], same_as=2)
+    close = AsyncMock()
+    with patch.object(dd, "get_driver", AsyncMock(return_value=_Driver(graph))), \
+         patch.object(dd, "close_driver", close):
+        asyncio.run(dd.run(batch=10, dry_run=False))
+    close.assert_awaited_once()
+    assert not graph.pairs and graph.same_as == 0
+
+
+@pytest.mark.parametrize("argv,dry,batch", [
+    ([], False, 1000),
+    (["--dry-run", "--batch", "50"], True, 50),
+])
+def test_cli(argv, dry, batch):
+    with patch.object(dd, "run", AsyncMock()) as run:
+        dd.main(argv)
+    run.assert_awaited_once_with(batch=batch, dry_run=dry)
