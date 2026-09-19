@@ -82,10 +82,13 @@ INDEX_CYPHER = [
     "CREATE INDEX authority_name_clean IF NOT EXISTS FOR (a:Authority) ON (a.name_clean)",
     # last_consolidated_at: the re-consolidation sweeper's rotation
     # cursor. The sweeper pages the stalest entities with
-    #   ORDER BY coalesce(n.last_consolidated_at, datetime('1970-01-01')) ASC
-    # so without a range index on the property every page is a full
-    # label scan (~3.6M Company / ~165k Authority rows) plus a sort.
-    # With the index the "oldest first" page is an index-ordered scan.
+    #   WHERE n.last_consolidated_at IS NOT NULL
+    #   ORDER BY n.last_consolidated_at ASC LIMIT $page
+    # which the planner answers by walking this index in order. (Until
+    # 2026-09-19 it ordered by coalesce(..., 1970) instead, which no index
+    # can serve: every page was a full label scan plus a sort despite
+    # this index. Never-swept entities, absent from the index, are found
+    # by a separate, less frequent scan: sweeper._page_unstamped.)
     "CREATE INDEX company_last_consolidated IF NOT EXISTS "
     "FOR (c:Company) ON (c.last_consolidated_at)",
     "CREATE INDEX authority_last_consolidated IF NOT EXISTS "
