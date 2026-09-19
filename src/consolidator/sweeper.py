@@ -43,6 +43,7 @@ Config (env)
   SWEEP_AUTHORITY_RATE_PER_SEC default 2   (~165k authorities / ~1 day)
   SWEEP_EMPTY_BACKOFF_SEC      default 30  (sleep when a page is empty)
   SWEEP_CONCURRENCY            default 1   (entities in flight, ALL labels together)
+  SWEEP_UNSTAMPED_SCAN_SEC     default 300 (how often to look for never-swept entities)
   METRICS_PORT                 default 9100
   CONSOLIDATOR_NEO4J_*         Neo4j creds (via src.config.settings)
 """
@@ -110,6 +111,11 @@ class SweeperConfig:
     # what the sweep can ask of Neo4j and the event store at any moment;
     # the per-label rates stay as ceilings on top of it.
     concurrency: int = 1
+    # How often to look for entities that have never been swept. They
+    # are the only ones the last_consolidated_at index cannot find (a
+    # range index holds no nulls), so finding them is a full label scan;
+    # doing that once per page instead cost two such scans a page.
+    unstamped_scan_s: float = 300.0
 
     @classmethod
     def from_env(cls) -> "SweeperConfig":
@@ -130,6 +136,7 @@ class SweeperConfig:
             empty_backoff_s=float(os.environ.get("SWEEP_EMPTY_BACKOFF_SEC", "30")),
             metrics_port=int(os.environ.get("METRICS_PORT", "9100")),
             concurrency=max(1, int(os.environ.get("SWEEP_CONCURRENCY", "1"))),
+            unstamped_scan_s=float(os.environ.get("SWEEP_UNSTAMPED_SCAN_SEC", "300")),
         )
 
 
@@ -180,13 +187,40 @@ def _classify(result: engine.ConsolidationResult) -> str:
     return "noop"
 
 
+# Both rotation queries order by the bare property, with IS NOT NULL, so
+# the planner walks the range index on last_consolidated_at in order and
+# stops at the LIMIT: ~3,000 db hits for a page of 1,000 on prod's 4.8M
+# companies. They used to ORDER BY coalesce(..., 1970) so never-swept
+# entities came first; an expression can't use the index, so every page
+# was two full label scans (14.4M db hits and ~2.8 s each), which became
+# the sweep's bottleneck once it ran several entities at once. The
+# never-swept are found separately and less often: see _page_unstamped.
 async def _page_stalest(
     driver: AsyncDriver, database: str, label: str, key: str, page_size: int
 ) -> list[str]:
     query = (
-        f"MATCH (n:{label}) WHERE n.name IS NOT NULL "
+        f"MATCH (n:{label}) "
+        "WHERE n.last_consolidated_at IS NOT NULL AND n.name IS NOT NULL "
         f"RETURN n.{key} AS id "
-        "ORDER BY coalesce(n.last_consolidated_at, datetime('1970-01-01')) ASC "
+        "ORDER BY n.last_consolidated_at ASC "
+        "LIMIT $page"
+    )
+    async with driver.session(database=database) as session:
+        result = await session.run(query, page=page_size)
+        return [record["id"] async for record in result if record["id"] is not None]
+
+
+async def _page_unstamped(
+    driver: AsyncDriver, database: str, label: str, key: str, page_size: int
+) -> list[str]:
+    """Entities never swept at all: the stalest there are, and invisible
+    to the index. A label scan, but one that stops at the LIMIT, so it is
+    cheap exactly when it matters (after a reset or a big import, when
+    they are everywhere) and a full scan only when there are few."""
+    query = (
+        f"MATCH (n:{label}) "
+        "WHERE n.last_consolidated_at IS NULL AND n.name IS NOT NULL "
+        f"RETURN n.{key} AS id "
         "LIMIT $page"
     )
     async with driver.session(database=database) as session:
@@ -195,12 +229,15 @@ async def _page_stalest(
 
 
 async def _measure_lag(driver: AsyncDriver, database: str, label: str) -> float:
-    """now - oldest last_consolidated_at, in seconds. Computed in Cypher
-    so we don't have to marshal Neo4j datetimes into Python."""
+    """now - oldest last_consolidated_at, in seconds, off the index (the
+    first entry in index order). Computed in Cypher so we don't have to
+    marshal Neo4j datetimes into Python. Never-swept entities are not in
+    the index; sweep_label reports them itself."""
     query = (
-        f"MATCH (n:{label}) WHERE n.name IS NOT NULL "
-        "WITH min(coalesce(n.last_consolidated_at, datetime('1970-01-01'))) AS oldest "
-        "RETURN duration.inSeconds(oldest, datetime()).seconds AS lag"
+        f"MATCH (n:{label}) "
+        "WHERE n.last_consolidated_at IS NOT NULL AND n.name IS NOT NULL "
+        "WITH n ORDER BY n.last_consolidated_at ASC LIMIT 1 "
+        "RETURN duration.inSeconds(n.last_consolidated_at, datetime()).seconds AS lag"
     )
     async with driver.session(database=database) as session:
         result = await session.run(query)
@@ -314,7 +351,7 @@ async def _sweep_one(
     return outcome
 
 
-async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     driver: AsyncDriver,
     database: str,
     label: str,
@@ -325,6 +362,7 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
     empty_backoff_s: float,
     concurrency: int = 1,
     slots: asyncio.Semaphore | None = None,
+    unstamped_scan_s: float = 300.0,
 ) -> None:
     """Forever: page the stalest entities for ``label`` and re-consolidate
     them, up to ``concurrency`` at once and rate-limited, stamping the
@@ -344,12 +382,28 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
         "concurrency={concurrency})",
         label=label, key=key, page=page_size, rate=rate, concurrency=concurrency,
     )
+    # Never-swept entities go first, as they always did. Looking for them
+    # is the one full scan left, so it runs when due rather than per page:
+    # at once on start, again whenever the last look filled a whole page
+    # (there may be more), otherwise every unstamped_scan_s.
+    unstamped_due = 0.0
     while not stop_event.is_set():
         try:
-            ROTATION_LAG.labels(label=label).set(
-                await _measure_lag(driver, database, label)
-            )
-            ids = await _page_stalest(driver, database, label, key, page_size)
+            ids: list[str] = []
+            if time.monotonic() >= unstamped_due:
+                ids = await _page_unstamped(driver, database, label, key, page_size)
+                if len(ids) < page_size:
+                    unstamped_due = time.monotonic() + unstamped_scan_s
+            if ids:
+                # Something has never been swept, so the rotation is as far
+                # behind as it can be: now - 1970, what the gauge read when
+                # the query coalesced nulls to 1970.
+                ROTATION_LAG.labels(label=label).set(time.time())
+            else:
+                ROTATION_LAG.labels(label=label).set(
+                    await _measure_lag(driver, database, label)
+                )
+                ids = await _page_stalest(driver, database, label, key, page_size)
         # A transient Neo4j hiccup on the page/lag queries must not kill
         # the task — back off and retry the page.
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -464,6 +518,7 @@ async def run(config: SweeperConfig | None = None) -> None:
                 empty_backoff_s=config.empty_backoff_s,
                 concurrency=config.concurrency,
                 slots=slots,
+                unstamped_scan_s=config.unstamped_scan_s,
             ),
             name=f"sweep-{label}",
         )
