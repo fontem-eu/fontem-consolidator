@@ -26,6 +26,17 @@ from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 from src.consolidator import sweeper
 from src.consolidator.engine import ConsolidationResult
 
+_real_page_unstamped = sweeper._page_unstamped
+
+
+@pytest.fixture(autouse=True)
+def _no_unstamped():
+    """The loop looks for never-swept entities before paging the index.
+    These tests drive the index path, so that look finds none; the tests
+    for the never-swept path patch it themselves."""
+    with patch.object(sweeper, "_page_unstamped", AsyncMock(return_value=[])):
+        yield
+
 
 def _result(*outcomes: str) -> ConsolidationResult:
     return ConsolidationResult(
@@ -120,9 +131,24 @@ async def test_page_stalest_orders_oldest_first():
     assert ids == ["gmr-1", "gmr-2"]
     query, params = driver.queries[0]
     assert "RETURN n.gmr_id AS id" in query
-    assert "ORDER BY coalesce(n.last_consolidated_at, datetime('1970-01-01')) ASC" in query
+    # The bare property, not an expression: only that the index can order.
+    assert "ORDER BY n.last_consolidated_at ASC" in query
+    assert "n.last_consolidated_at IS NOT NULL" in query
+    assert "coalesce" not in query
     assert "n.name IS NOT NULL" in query
     assert params == {"page": 200}
+
+
+@pytest.mark.asyncio
+async def test_page_unstamped_finds_the_never_swept():
+    driver = _FakeDriver(lambda q, p: _AsyncResult([{"id": "new-1"}]))
+    ids = await _real_page_unstamped(driver, "neo4j", "Company", "gmr_id", 1000)
+    assert ids == ["new-1"]
+    query, params = driver.queries[0]
+    assert "n.last_consolidated_at IS NULL" in query
+    assert "n.name IS NOT NULL" in query
+    assert "ORDER BY" not in query  # nothing to order: stops at the LIMIT
+    assert params == {"page": 1000}
 
 
 @pytest.mark.asyncio
@@ -140,6 +166,10 @@ async def test_measure_lag_reads_seconds():
     driver = _FakeDriver(lambda q, p: _AsyncResult([{"lag": 4242}]))
     lag = await sweeper._measure_lag(driver, "neo4j", "Company")
     assert lag == 4242.0
+    query, _ = driver.queries[0]
+    # First entry in index order, not min() over a full scan.
+    assert "ORDER BY n.last_consolidated_at ASC LIMIT 1" in query
+    assert "min(" not in query and "coalesce" not in query
 
 
 # --------------------------------------------------------------------------
