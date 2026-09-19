@@ -351,6 +351,39 @@ async def _sweep_one(
     return outcome
 
 
+async def _next_page(  # pylint: disable=too-many-arguments
+    driver: AsyncDriver,
+    database: str,
+    label: str,
+    key: str,
+    page_size: int,
+    *,
+    unstamped_due: float,
+    unstamped_scan_s: float,
+) -> tuple[list[str], float]:
+    """The next page to sweep, and when to look for never-swept entities
+    again.
+
+    Never-swept entities go first, as they always did. Looking for them
+    is the one full scan left, so it runs when due rather than per page:
+    at once on start, again whenever the last look filled a whole page
+    (there may be more), otherwise every ``unstamped_scan_s``. Also sets
+    the rotation-lag gauge for the page it returns."""
+    ids: list[str] = []
+    if time.monotonic() >= unstamped_due:
+        ids = await _page_unstamped(driver, database, label, key, page_size)
+        if len(ids) < page_size:
+            unstamped_due = time.monotonic() + unstamped_scan_s
+    if ids:
+        # Something has never been swept, so the rotation is as far behind
+        # as it can be: now - 1970, what the gauge read when the query
+        # coalesced nulls to 1970.
+        ROTATION_LAG.labels(label=label).set(time.time())
+        return ids, unstamped_due
+    ROTATION_LAG.labels(label=label).set(await _measure_lag(driver, database, label))
+    return await _page_stalest(driver, database, label, key, page_size), unstamped_due
+
+
 async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     driver: AsyncDriver,
     database: str,
@@ -382,28 +415,13 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
         "concurrency={concurrency})",
         label=label, key=key, page=page_size, rate=rate, concurrency=concurrency,
     )
-    # Never-swept entities go first, as they always did. Looking for them
-    # is the one full scan left, so it runs when due rather than per page:
-    # at once on start, again whenever the last look filled a whole page
-    # (there may be more), otherwise every unstamped_scan_s.
     unstamped_due = 0.0
     while not stop_event.is_set():
         try:
-            ids: list[str] = []
-            if time.monotonic() >= unstamped_due:
-                ids = await _page_unstamped(driver, database, label, key, page_size)
-                if len(ids) < page_size:
-                    unstamped_due = time.monotonic() + unstamped_scan_s
-            if ids:
-                # Something has never been swept, so the rotation is as far
-                # behind as it can be: now - 1970, what the gauge read when
-                # the query coalesced nulls to 1970.
-                ROTATION_LAG.labels(label=label).set(time.time())
-            else:
-                ROTATION_LAG.labels(label=label).set(
-                    await _measure_lag(driver, database, label)
-                )
-                ids = await _page_stalest(driver, database, label, key, page_size)
+            ids, unstamped_due = await _next_page(
+                driver, database, label, key, page_size,
+                unstamped_due=unstamped_due, unstamped_scan_s=unstamped_scan_s,
+            )
         # A transient Neo4j hiccup on the page/lag queries must not kill
         # the task — back off and retry the page.
         except Exception as exc:  # pylint: disable=broad-exception-caught
