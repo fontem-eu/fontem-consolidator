@@ -107,6 +107,13 @@ spec:
               value: "{{ .Values.sweepAuthorityRatePerSec | default 2 }}"
             - name: SWEEP_PAGE_SIZE
               value: "{{ .Values.sweepPageSize | default 200 }}"
+            # Entities being re-consolidated at once, Company and Authority
+            # together. 1 is the old one-at-a-time sweep. Each unit is one
+            # consolidation's worth of Neo4j queries and event writes in
+            # flight, so this is the knob that bounds the sweep's load on
+            # both stores; the per-label rates above stay as ceilings.
+            - name: SWEEP_CONCURRENCY
+              value: "{{ .Values.sweepConcurrency | default 1 }}"
             - name: METRICS_PORT
               value: "9100"
           resources:

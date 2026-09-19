@@ -42,6 +42,7 @@ Config (env)
   SWEEP_COMPANY_RATE_PER_SEC   default 6   (~3.6M companies / ~1 week)
   SWEEP_AUTHORITY_RATE_PER_SEC default 2   (~165k authorities / ~1 day)
   SWEEP_EMPTY_BACKOFF_SEC      default 30  (sleep when a page is empty)
+  SWEEP_CONCURRENCY            default 1   (entities in flight, ALL labels together)
   METRICS_PORT                 default 9100
   CONSOLIDATOR_NEO4J_*         Neo4j creds (via src.config.settings)
 """
@@ -49,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import signal
 import time
 from dataclasses import dataclass, field
@@ -89,6 +91,10 @@ SWEEP_RATE = Gauge(
     "Configured re-consolidation rate (entities/sec) for this label",
     ["label"],
 )
+SWEEP_CONCURRENCY = Gauge(
+    "consolidator_sweep_concurrency",
+    "Configured maximum entities being re-consolidated at once, all labels together",
+)
 
 
 @dataclass
@@ -98,6 +104,12 @@ class SweeperConfig:
     rates: dict[str, float] = field(default_factory=dict)
     empty_backoff_s: float = 30.0
     metrics_port: int = 9100
+    # Entities in flight at once across every label. The work is almost
+    # all waiting on Neo4j, so one at a time left the sweep at ~3/s with
+    # Neo4j mostly idle (prod, 2026-09-18). This is the knob that bounds
+    # what the sweep can ask of Neo4j and the event store at any moment;
+    # the per-label rates stay as ceilings on top of it.
+    concurrency: int = 1
 
     @classmethod
     def from_env(cls) -> "SweeperConfig":
@@ -117,6 +129,7 @@ class SweeperConfig:
             rates=rates,
             empty_backoff_s=float(os.environ.get("SWEEP_EMPTY_BACKOFF_SEC", "30")),
             metrics_port=int(os.environ.get("METRICS_PORT", "9100")),
+            concurrency=max(1, int(os.environ.get("SWEEP_CONCURRENCY", "1"))),
         )
 
 
@@ -136,15 +149,19 @@ class _Pacer:
         if self._interval <= 0:
             return
         now = self._clock()
-        if self._next is None:
-            self._next = now
-        delay = self._next - now
+        # Book the slot BEFORE sleeping. With several workers waiting on
+        # one pacer, reading the slot, sleeping, and only then advancing
+        # it would hand every concurrent caller the same slot and let the
+        # rate be exceeded by the concurrency.
+        #
+        # Anchored off max(now, scheduled) so a slow consolidate() that
+        # overran its slot doesn't build up a debt the pacer then tries
+        # to "catch up" by never sleeping.
+        slot = now if self._next is None else max(now, self._next)
+        self._next = slot + self._interval
+        delay = slot - now
         if delay > 0:
             await self._sleep(delay)
-        # Anchor the next slot off max(now, scheduled) so a slow
-        # consolidate() that overran its slot doesn't build up a debt
-        # the pacer then tries to "catch up" by never sleeping.
-        self._next = max(now, self._next) + self._interval
 
 
 def _classify(result: engine.ConsolidationResult) -> str:
@@ -217,6 +234,20 @@ _STORE_FAILURES = (ServiceUnavailable, SessionExpired, TransientError)
 #: Outcome of an entity left unstamped because the store failed.
 RETRY = "retry"
 
+#: Deadlocks are the one store failure retried in place. With several
+#: entities in flight, two duplicates of one company are often evaluated
+#: at once and lock the same pair of nodes in opposite order; Neo4j kills
+#: one transaction and says to retry it. Backing the whole label off for
+#: SWEEP_EMPTY_BACKOFF_SEC for that would throw away the concurrency.
+#: Every other store failure (Neo4j down, memory pool exhausted) still
+#: backs off: retrying those in place only adds load to a struggling store.
+_DEADLOCK = "Neo.TransientError.Transaction.DeadlockDetected"
+_DEADLOCK_ATTEMPTS = 3
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    return isinstance(exc, TransientError) and getattr(exc, "code", None) == _DEADLOCK
+
 
 async def _sweep_one(
     driver: AsyncDriver, database: str, label: str, key: str, entity_id: str
@@ -237,30 +268,40 @@ async def _sweep_one(
         stamping, so the entity interrupted mid-evaluation is the first
         one swept after the restart.
     """
-    try:
-        result = await engine.consolidate(
-            driver,
-            database,
-            entity_type=label,
-            entity_id=entity_id,
-            triggered_by="sweeper",
-            exclude_rule_prefix="gds_",
-            mode="match_only",
-        )
-        outcome = _classify(result)
-    except _STORE_FAILURES as exc:
-        logger.warning(
-            "sweeper[{label}]: Neo4j unavailable consolidating {id} ({err}); "
-            "leaving it unstamped",
-            label=label, id=entity_id, err=repr(exc),
-        )
-        return RETRY
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.warning(
-            "sweeper[{label}]: consolidate failed for {id} ({err}); continuing",
-            label=label, id=entity_id, err=repr(exc),
-        )
-        outcome = "error"
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            result = await engine.consolidate(
+                driver,
+                database,
+                entity_type=label,
+                entity_id=entity_id,
+                triggered_by="sweeper",
+                exclude_rule_prefix="gds_",
+                mode="match_only",
+            )
+            outcome = _classify(result)
+            break
+        except _STORE_FAILURES as exc:
+            if _is_deadlock(exc) and attempt < _DEADLOCK_ATTEMPTS:
+                # Consolidation is MERGE-based and re-runnable; jitter so
+                # the two deadlocked evaluations don't collide again.
+                await asyncio.sleep(random.uniform(0.2, 1.0) * attempt)
+                continue
+            logger.warning(
+                "sweeper[{label}]: Neo4j unavailable consolidating {id} ({err}); "
+                "leaving it unstamped",
+                label=label, id=entity_id, err=repr(exc),
+            )
+            return RETRY
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "sweeper[{label}]: consolidate failed for {id} ({err}); continuing",
+                label=label, id=entity_id, err=repr(exc),
+            )
+            outcome = "error"
+            break
     try:
         await _stamp(driver, database, label, key, entity_id)
     # If the stamp fails the entity stays the stalest and is retried on
@@ -282,15 +323,26 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
     page_size: int,
     rate: float,
     empty_backoff_s: float,
+    concurrency: int = 1,
+    slots: asyncio.Semaphore | None = None,
 ) -> None:
     """Forever: page the stalest entities for ``label`` and re-consolidate
-    each, rate-limited, stamping the rotation cursor as we go."""
+    them, up to ``concurrency`` at once and rate-limited, stamping the
+    rotation cursor as we go.
+
+    ``slots`` bounds how many entities are in flight across ALL labels:
+    run() passes one semaphore to every label so SWEEP_CONCURRENCY is the
+    process-wide ceiling, not a per-label one. Without it (tests, a single
+    label) the label gets a semaphore of its own."""
     key = id_key_for(label)
     pacer = _Pacer(rate)
+    if slots is None:
+        slots = asyncio.Semaphore(concurrency)
     SWEEP_RATE.labels(label=label).set(rate)
     logger.info(
-        "sweeper[{label}]: starting (key={key}, page={page}, rate={rate}/s)",
-        label=label, key=key, page=page_size, rate=rate,
+        "sweeper[{label}]: starting (key={key}, page={page}, rate={rate}/s, "
+        "concurrency={concurrency})",
+        label=label, key=key, page=page_size, rate=rate, concurrency=concurrency,
     )
     while not stop_event.is_set():
         try:
@@ -316,18 +368,64 @@ async def sweep_label(  # pylint: disable=too-many-arguments,too-many-positional
             await _interruptible_sleep(stop_event, empty_backoff_s)
             continue
 
-        for entity_id in ids:
-            if stop_event.is_set():
-                break
+        completed = await _sweep_page(
+            driver, database, label, key, ids,
+            pacer=pacer, slots=slots, stop_event=stop_event,
+            concurrency=concurrency,
+        )
+        if not completed:
+            # A store failure: the rest of the page would fail the same
+            # way. Back off and re-page: the unstamped entities are still
+            # the stalest, so the new page starts with them.
+            await _interruptible_sleep(stop_event, empty_backoff_s)
+
+
+async def _sweep_page(  # pylint: disable=too-many-arguments
+    driver: AsyncDriver,
+    database: str,
+    label: str,
+    key: str,
+    ids: list[str],
+    *,
+    pacer: _Pacer,
+    slots: asyncio.Semaphore,
+    stop_event: asyncio.Event,
+    concurrency: int,
+) -> bool:
+    """Re-consolidate one page with up to ``concurrency`` workers pulling
+    ids off it. Returns False if a store failure means the page should be
+    abandoned; the workers stop taking new ids at that point and the ones
+    already running finish.
+
+    The whole page finishes before the next is fetched, so an entity is
+    never evaluated twice at once: anything still running is unstamped
+    and would otherwise come back as the stalest on the next page."""
+    pending = iter(ids)
+    store_failed = False
+
+    async def worker() -> None:
+        nonlocal store_failed
+        while not stop_event.is_set() and not store_failed:
+            entity_id = next(pending, None)
+            if entity_id is None:
+                return
+            # Pace BEFORE taking a slot: a worker sleeping out the label's
+            # rate must not hold one of the process-wide slots.
             await pacer.wait()
-            outcome = await _sweep_one(driver, database, label, key, entity_id)
+            if stop_event.is_set() or store_failed:
+                return
+            async with slots:
+                outcome = await _sweep_one(driver, database, label, key, entity_id)
             SWEEP_ENTITIES.labels(label=label, outcome=outcome).inc()
             if outcome == RETRY:
-                # The rest of the page would fail the same way. Back off
-                # and re-page: the unstamped entity is still the stalest,
-                # so the new page starts with it.
-                await _interruptible_sleep(stop_event, empty_backoff_s)
-                break
+                store_failed = True
+
+    # TaskGroup, not gather: if a worker dies unexpectedly the others are
+    # cancelled with it instead of running on unobserved.
+    async with asyncio.TaskGroup() as group:
+        for _ in range(max(1, min(concurrency, len(ids)))):
+            group.create_task(worker())
+    return not store_failed
 
 
 async def run(config: SweeperConfig | None = None) -> None:
@@ -350,6 +448,10 @@ async def run(config: SweeperConfig | None = None) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
+    # One pool of slots for every label: SWEEP_CONCURRENCY is the most the
+    # sweep will have in flight against Neo4j, whatever the label mix.
+    slots = asyncio.Semaphore(config.concurrency)
+    SWEEP_CONCURRENCY.set(config.concurrency)
     tasks = [
         asyncio.create_task(
             sweep_label(
@@ -360,6 +462,8 @@ async def run(config: SweeperConfig | None = None) -> None:
                 page_size=config.page_size,
                 rate=config.rates.get(label, _FALLBACK_RATE),
                 empty_backoff_s=config.empty_backoff_s,
+                concurrency=config.concurrency,
+                slots=slots,
             ),
             name=f"sweep-{label}",
         )

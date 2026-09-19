@@ -243,7 +243,9 @@ async def mark_asserted(driver: AsyncDriver, database: str, rows: list[dict]) ->
                 MATCH (a:{label} {{{id_key}: pair.source_id}})
                 MATCH (b:{label} {{{id_key}: pair.target_id}})
                 WHERE NOT EXISTS {{ (a)-[:NOT_SAME_AS]-(b) }}
-                MERGE (a)-[r:SAME_AS_CANDIDATE]->(b)
+                // Undirected, like every read of this edge: B's run must
+                // settle the pair A's run proposed, not add a second edge.
+                MERGE (a)-[r:SAME_AS_CANDIDATE]-(b)
                 SET r.status = 'approved',
                     r.origin = 'auto',
                     r.method = pair.method,
@@ -278,8 +280,15 @@ async def _emit_same_as_event(
     Either way failures are absorbed in the eventlog shim — the Neo4j
     write above is the immediate source of truth and a flaky event store
     must not abort consolidation."""
-    a_iri = entity_iri(decision.entity_type, decision.source_id)
-    b_iri = entity_iri(decision.entity_type, decision.target_id)
+    # Canonical order. owl:sameAs is symmetric, but the sink MERGEs the
+    # :SAME_AS edge in the direction the event names, so (A, B) from A's
+    # run and (B, A) from B's run became two edges. With several entities
+    # swept at once both runs can emit before either marks the pair
+    # settled; ordering the pair makes those two events the same event.
+    a_iri, b_iri = sorted((
+        entity_iri(decision.entity_type, decision.source_id),
+        entity_iri(decision.entity_type, decision.target_id),
+    ))
     if collect is not None:
         collect.append({
             "a_iri": a_iri,
@@ -401,7 +410,11 @@ async def _propose_candidate(
                 (a)-[d:SAME_AS_CANDIDATE]-(b)
                 WHERE d.status IN ['declined', 'approved']
               }}
-            MERGE (a)-[r:SAME_AS_CANDIDATE]->(b)
+            // Undirected: A's run proposes (A, B), B's run finds A and
+            // must add its rule to that SAME proposal. A directed MERGE
+            // created a second, reverse edge instead -- 10,687 pairs in
+            // prod on 2026-09-18, each a duplicate in the review queue.
+            MERGE (a)-[r:SAME_AS_CANDIDATE]-(b)
             // Indices of existing entries to KEEP (those that aren't
             // for the rule firing now — that one's about to be
             // replaced/appended).
