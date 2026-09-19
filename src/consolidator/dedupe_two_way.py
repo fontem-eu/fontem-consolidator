@@ -33,6 +33,10 @@ Usage::
 
     python -m src.consolidator.dedupe_two_way --dry-run
     python -m src.consolidator.dedupe_two_way
+
+Run it as its own Job, not by exec'ing into the sweeper or API pod: it
+has its own memory then, and cannot take a serving container down with
+it (it did once, on shared).
 """
 from __future__ import annotations
 
@@ -163,11 +167,28 @@ def _plan(records) -> tuple[list[dict], dict]:
     return rows, stats
 
 
-async def _read(driver, database: str, batch: int | None):
-    query = _READ_CANDIDATE_PAIRS if batch else _READ_CANDIDATE_PAIRS.replace("LIMIT $batch", "")
+async def _read(driver, database: str, batch: int):
     async with driver.session(database=database) as session:
-        result = await session.run(query, batch=batch)
+        result = await session.run(_READ_CANDIDATE_PAIRS, batch=batch)
         return [rec async for rec in result]
+
+
+async def _dry_run_stats(driver, database: str) -> dict:
+    """Plan every pair without holding them: streamed, one at a time.
+
+    Shared had 207,895 two-way pairs on 2026-09-19; reading them all into
+    a list got the process OOM-killed."""
+    stats = {"pairs": 0, "kept_approved": 0, "both_approved": 0}
+    async with driver.session(database=database) as session:
+        result = await session.run(_READ_CANDIDATE_PAIRS.replace("LIMIT $batch", ""))
+        async for rec in result:
+            rows, one = _plan([rec])
+            if stats["pairs"] == 0:
+                logger.info("dry run, first pair: keep {keep}, drop {drop}, props {props}",
+                            **rows[0])
+            for k, v in one.items():
+                stats[k] += v
+    return stats
 
 
 async def fold_candidates(driver, database: str, *, batch: int, dry_run: bool) -> dict:
@@ -176,10 +197,7 @@ async def fold_candidates(driver, database: str, *, batch: int, dry_run: bool) -
     nothing left it can fold (a pair the sweeper changed mid-batch is read
     again on the next pass)."""
     if dry_run:
-        rows, stats = _plan(await _read(driver, database, None))
-        if rows:
-            logger.info("dry run, first pair: keep {keep}, drop {drop}, props {props}", **rows[0])
-        return {**stats, "folded": 0, "passes": 1}
+        return {**await _dry_run_stats(driver, database), "folded": 0, "passes": 1}
     total = {"pairs": 0, "kept_approved": 0, "both_approved": 0, "folded": 0, "passes": 0}
     while True:
         total["passes"] += 1
