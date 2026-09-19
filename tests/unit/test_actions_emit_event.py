@@ -204,3 +204,28 @@ async def test_settled_check_is_skipped_when_not_allowed_to_assert():
         )
     assert outcome == "flag"
     settled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assert_event_names_the_pair_in_canonical_order():
+    """(A, B) from A's run and (B, A) from B's run must be one event, or the
+    sink's directed MERGE writes two :SAME_AS edges for one pair."""
+    def decision(src, tgt):
+        return Decision(rule_name="exact_lei_match", action="merge", source_id=src,
+                        target_id=tgt, confidence=1.0, entity_type="Company", details={})
+
+    forward: list[dict] = []
+    backward: list[dict] = []
+    await actions._emit_same_as_event(decision("aaa", "bbb"), forward)  # pylint: disable=protected-access
+    await actions._emit_same_as_event(decision("bbb", "aaa"), backward)  # pylint: disable=protected-access
+    pair = (forward[0]["a_iri"], forward[0]["b_iri"])
+    assert pair == (backward[0]["a_iri"], backward[0]["b_iri"])
+    assert forward[0]["a_iri"].endswith("aaa")
+
+
+def test_candidate_writes_merge_undirected():
+    """Every SAME_AS_CANDIDATE write in actions.py MERGEs without a direction."""
+    import inspect  # pylint: disable=import-outside-toplevel
+    src = inspect.getsource(actions)
+    assert "MERGE (a)-[r:SAME_AS_CANDIDATE]->(b)" not in src
+    assert src.count("MERGE (a)-[r:SAME_AS_CANDIDATE]-(b)") == 2
