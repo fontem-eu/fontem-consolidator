@@ -8,7 +8,7 @@ jobs:
   test:
     runs-on: python
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install deps
         env:
           PIP_INDEX_URL: https://nexus.void42.internal/repository/pypi-proxy/simple/
@@ -38,7 +38,7 @@ jobs:
     needs: test
     runs-on: python
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history, or SonarQube cannot date a line and treats the
           # whole project as new code: it then measures new-coverage and
@@ -72,7 +72,7 @@ jobs:
           # all -- which passes any coverage condition, because a metric
           # with no value is skipped rather than failed.
           python3 -m pytest tests/unit/ -q --cov=src --cov-report=xml:coverage.xml
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: void42/ci-actions
           path: .ci-actions
@@ -86,8 +86,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: python
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: void42/ci-actions
           path: .ci-actions

@@ -1,5 +1,5 @@
 # ── build: venv + void42 CA folded into the trust bundle ─────────────────────
-FROM cgr.void42.internal/chainguard/python:latest-dev AS build
+FROM cgr.void42.internal/chainguard/python:latest-dev@sha256:8af5085c793a9b501253117ccceabff2340400f3ef92fb0e09df690dd1e961a4 AS build
 USER root
 ENV PIP_INDEX_URL=https://nexus.void42.internal/repository/pypi-proxy/simple/ \
     PIP_TRUSTED_HOST=nexus.void42.internal
@@ -14,7 +14,7 @@ COPY vendor/gmr-events/        /tmp/gmr-events/
 RUN pip install --no-cache-dir /tmp/gmr-event-schemas /tmp/gmr-events
 
 # ── runtime: distroless; combined CA bundle so internal HTTPS is trusted ──────
-FROM cgr.void42.internal/chainguard/python:latest
+FROM cgr.void42.internal/chainguard/python:latest@sha256:1206ffee8644e6338b3fc8b6e5dc384b03d91ad1df1d6b74fa4255544ac51ad2
 WORKDIR /app
 COPY --from=build /venv /venv
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
