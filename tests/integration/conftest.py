@@ -52,6 +52,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# renovate: datasource=docker depName=neo4j
+_NEO4J_IMAGE = (
+    "neo4j:5.26.30-community"
+    "@sha256:22ec5cd05a8cbb372fc4bed5e384c30bc75fd92504c72be4462039761b105f61"
+)
+
+
 @pytest.fixture(scope="session")
 def neo4j_container():
     from testcontainers.neo4j import Neo4jContainer
@@ -62,8 +69,7 @@ def neo4j_container():
         # Enterprise-only — APOC and GDS both load on Community
         # (verified: 190 apoc + 423 gds procedures, gds.graph.project
         # and gds.degree.stream both run).
-        # renovate: datasource=docker depName=neo4j
-        Neo4jContainer("neo4j:5.26.30-community@sha256:22ec5cd05a8cbb372fc4bed5e384c30bc75fd92504c72be4462039761b105f61")
+        Neo4jContainer(_NEO4J_IMAGE)
         .with_env("NEO4J_PLUGINS", '["apoc", "graph-data-science"]')
         .with_env("NEO4J_apoc_trigger_enabled", "true")
         .with_env(
