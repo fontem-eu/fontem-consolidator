@@ -2,5 +2,32 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "pinDigests": true,
+  "packageRules": [
+    {
+      "description": "Neo4j stays on the 5.26 LTS line; the move to calendar versioning is a deliberate upgrade, not a patch",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "neo4j"
+      ],
+      "allowedVersions": "/^5\\.26\\./"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": [
+        "/tests/integration/conftest\\.py$/"
+      ],
+      "matchStrings": [
+        "neo4j:(?<currentValue>[^@\"\\s]+)\"?\\s*\"?@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "neo4j",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
   ]
 }
