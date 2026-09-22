@@ -392,53 +392,17 @@ async def correct(from_id: str, to_id: str, body: CorrectBody):
                        "/candidates/{from}/{to}/decide, not corrected",
             )
         label = rec["label"]
-        id_key = "gmr_id" if label == "Company" else "authority_id"
         retracted_method = rec["r"].get("method", "unknown")
 
         # Record the correction and drop the candidate. The assertion
         # itself is withdrawn by the RetractSameAs emitted below — it only
-        # ever existed as a triple in Virtuoso.
-        await session.run(
-            f"""
-            MATCH (a:{label} {{{id_key}: $from}})
-            MATCH (b:{label} {{{id_key}: $to}})
-            OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b)
-            DELETE c
-            WITH a, b
-            MERGE (a)-[n:NOT_SAME_AS]->(b)
-            SET n.decided_at = $now, n.reviewer = $reviewer,
-                n.reason = $reason, n.retracted_method = $method
-            """,
-            **{
-                "from": from_id, "to": to_id, "now": _now(),
-                "reviewer": body.reviewer, "reason": body.reason,
-                "method": retracted_method,
-            },
-        )
-
-        await session.run(
-            """
-            CREATE (dl:DecisionLog {
-              decision_id: $decision_id,
-              decided_at: $decided_at,
-              decision_type: 'manual_correction',
-              rule_name: $rule_name,
-              source_id: $source_id,
-              target_id: $target_id,
-              entity_type: $entity_type,
-              reviewer: $reviewer,
-              review_note: $note
-            })
-            """,
-            decision_id=str(uuid4()),
-            decided_at=_now(),
-            rule_name=retracted_method,
-            source_id=from_id,
-            target_id=to_id,
-            entity_type=label,
-            reviewer=body.reviewer,
-            note=body.reason,
-        )
+        # ever existed as a triple in Virtuoso. Same write as the C1
+        # cleanup Job makes per pair (actions.record_correction).
+        await actions.record_correction(session, actions.Correction(
+            label=label, from_id=from_id, to_id=to_id,
+            reviewer=body.reviewer, reason=body.reason,
+            retracted_method=retracted_method,
+        ))
 
     # Withdraw the published triple. A failure here leaves a wrong
     # owl:sameAs standing in Virtuoso even though Neo4j is corrected,
