@@ -156,6 +156,9 @@ _BY_LEI = (
 # lookup (src.consolidator.fiscal_id), which asks the same questions
 # but wants every holder rather than the resolver's ambiguity probe: the
 # MATCH/RETURN is one string per tier and only the LIMIT differs.
+# Suffix shared by the fiscal-id lookups; Sonar S1192 wants it named once.
+_LIMIT_SUFFIX = " LIMIT $limit"
+
 _VAT_TIER = (
     "MATCH (c:Company {vat: $vat}) "
     "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
@@ -389,7 +392,7 @@ async def lookup_by_vat(
 ) -> list[dict]:
     """Every Company holding this canonical VAT (the VAT tier's query)."""
     return await _run_match(
-        session, _VAT_TIER + " LIMIT $limit", vat=vat, limit=limit,
+        session, _VAT_TIER + _LIMIT_SUFFIX, vat=vat, limit=limit,
     )
 
 
@@ -400,7 +403,7 @@ async def lookup_by_registered_as(
     (the registered_as tier's query; a bare number is never matched
     without a country)."""
     return await _run_match(
-        session, _REGISTERED_AS_TIER + " LIMIT $limit",
+        session, _REGISTERED_AS_TIER + _LIMIT_SUFFIX,
         registered_as=registered_as, country=country, limit=limit,
     )
 
@@ -412,7 +415,7 @@ async def lookup_authority_by_national_id(
     country. Rows carry authority_id under the `gmr_id` key, as the
     resolver's own Authority queries do."""
     return await _run_match(
-        session, _AUTHORITY_NATIONAL_ID_TIER + " LIMIT $limit",
+        session, _AUTHORITY_NATIONAL_ID_TIER + _LIMIT_SUFFIX,
         ids=ids, country=country, limit=limit,
     )
 

@@ -269,7 +269,7 @@ async def scan(
 
 
 def _by_pattern(nodes: list[dict], patterns: list[str]) -> dict[str, int]:
-    counts = {p: 0 for p in patterns}
+    counts = dict.fromkeys(patterns, 0)
     for n in nodes:
         for p in n["patterns"]:
             counts[p] += 1

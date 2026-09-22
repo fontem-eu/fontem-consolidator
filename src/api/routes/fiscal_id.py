@@ -7,7 +7,7 @@ before minting a supplier from a bare `cbc:CompanyID`.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -56,7 +56,6 @@ class FiscalIdResponse(BaseModel):
 
 @router.get(
     "/fiscal-id/{number}",
-    response_model=FiscalIdResponse,
     responses={
         400: {
             "description": (
@@ -68,11 +67,10 @@ class FiscalIdResponse(BaseModel):
 )
 async def fiscal_id_lookup(
     number: str,
-    country: str | None = Query(
-        default=None,
+    country: Annotated[str | None, Query(
         description="ISO-2 or ISO-3 (EL, GR and GRC all mean Greece). "
                     "Without it every prefix the number fits is tried.",
-    ),
+    )] = None,
 ) -> FiscalIdResponse:
     """Answer whether the graph holds a fiscal number and under which prefix.
 
