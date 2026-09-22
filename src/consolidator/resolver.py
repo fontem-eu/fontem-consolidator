@@ -152,11 +152,16 @@ _BY_LEI = (
     "       c.lei AS lei LIMIT 2"
 )
 
-_BY_VAT = (
+# The VAT and registered_as tiers are shared with the fiscal-number
+# lookup (src.consolidator.fiscal_id), which asks the same questions
+# but wants every holder rather than the resolver's ambiguity probe: the
+# MATCH/RETURN is one string per tier and only the LIMIT differs.
+_VAT_TIER = (
     "MATCH (c:Company {vat: $vat}) "
     "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
-    "       c.lei AS lei LIMIT 2"
+    "       c.lei AS lei"
 )
+_BY_VAT = _VAT_TIER + " LIMIT 2"
 
 _BY_CIK = (
     "MATCH (c:Company {cik: $cik}) "
@@ -168,10 +173,24 @@ _BY_CIK = (
 # always country-scoped: the registry number is unique only within its
 # jurisdiction, so a bare match would collide across countries. Forward-
 # prep — the TED matcher does not yet forward national IDs.
-_BY_REGISTERED_AS = (
+_REGISTERED_AS_TIER = (
     "MATCH (c:Company {registered_as: $registered_as, country: $country}) "
     "RETURN c.gmr_id AS gmr_id, c.name AS name, c.country AS country, "
-    "       c.lei AS lei LIMIT 2"
+    "       c.lei AS lei"
+)
+_BY_REGISTERED_AS = _REGISTERED_AS_TIER + " LIMIT 2"
+
+# Authority's national id: the eForms buyer legal id (TED
+# nationalRegistrationNumber), stored as published -- prefixed VAT or
+# bare number -- so the fiscal-number lookup asks for both spellings at
+# once. Country-scoped like registered_as; served by the composite
+# index authority_national_id_country. Fiscal-id lookup only: the
+# resolver's Authority path is name-based.
+_AUTHORITY_NATIONAL_ID_TIER = (
+    "MATCH (a:Authority) "
+    "WHERE a.national_id IN $ids AND a.country = $country "
+    "RETURN a.authority_id AS gmr_id, a.name AS name, "
+    "       a.country AS country, NULL AS lei"
 )
 
 # Tier 3: cleaned-name + country agreement. apoc.text.clean
@@ -353,6 +372,49 @@ async def resolve(  # pylint: disable=too-many-arguments,too-many-locals,too-man
 async def _run_match(session, query: str, **params):
     result = await session.run(query, **params)
     return [dict(record) async for record in result]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Hard-identifier lookups shared with GET /fiscal-id. Same Cypher as
+# the tiers above; every holder is returned (up to HOLDER_LIMIT) because
+# a duplicate cluster -- three "Visualforma" nodes on one NIF -- is
+# exactly what that endpoint exists to show.
+# ─────────────────────────────────────────────────────────────────────
+
+HOLDER_LIMIT = 10
+
+
+async def lookup_by_vat(
+    session, vat: str, *, limit: int = HOLDER_LIMIT,
+) -> list[dict]:
+    """Every Company holding this canonical VAT (the VAT tier's query)."""
+    return await _run_match(
+        session, _VAT_TIER + " LIMIT $limit", vat=vat, limit=limit,
+    )
+
+
+async def lookup_by_registered_as(
+    session, registered_as: str, country: str, *, limit: int = HOLDER_LIMIT,
+) -> list[dict]:
+    """Every Company registered under this number in this ISO-3 country
+    (the registered_as tier's query; a bare number is never matched
+    without a country)."""
+    return await _run_match(
+        session, _REGISTERED_AS_TIER + " LIMIT $limit",
+        registered_as=registered_as, country=country, limit=limit,
+    )
+
+
+async def lookup_authority_by_national_id(
+    session, ids: list[str], country: str, *, limit: int = HOLDER_LIMIT,
+) -> list[dict]:
+    """Every Authority whose national_id is any of `ids` in this ISO-3
+    country. Rows carry authority_id under the `gmr_id` key, as the
+    resolver's own Authority queries do."""
+    return await _run_match(
+        session, _AUTHORITY_NATIONAL_ID_TIER + " LIMIT $limit",
+        ids=ids, country=country, limit=limit,
+    )
 
 
 def _resolve_rows(

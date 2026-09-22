@@ -270,3 +270,65 @@ async def emit_assert_same_as_many(
             n=len(rows),
         )
         return 0
+
+
+def _emit_retract_many_sync(rows: list[dict], producer: str) -> int:
+    """Insert every retraction inside ONE transaction.
+
+    `rows` carry the logical shape emit_retract_same_as takes -- a_iri /
+    b_iri / reason / reviewer / retracted_method / domain. The envelope
+    is built here with the same builder as the single-emit path.
+    """
+    log = _get_log()
+    if log is None:
+        return 0
+    # Optional dep — see _get_log() for the same lazy-import rationale.
+    from fontem_event_schemas.builders import retract_same_as  # pylint: disable=import-outside-toplevel
+    batch_id = uuid.uuid4()
+    with log.batch(batch_id, producer=producer) as emit:
+        for r in rows:
+            emit.upsert(
+                "RetractSameAs",
+                iri=r["a_iri"],
+                domain=r["domain"],
+                payload=retract_same_as(
+                    a_iri=r["a_iri"],
+                    b_iri=r["b_iri"],
+                    reason=r["reason"],
+                    reviewer=r.get("reviewer"),
+                    retracted_method=r.get("retracted_method"),
+                ),
+            )
+    return len(rows)
+
+
+async def emit_retract_same_as_many(
+    rows: list[dict],
+    producer: str = "fontem-consolidator",
+) -> int:
+    """Emit a batch of RetractSameAs events in one transaction.
+
+    The batched counterpart of emit_retract_same_as, for cleanups that
+    withdraw thousands of equivalences at once (retract_junk_names): one
+    transaction per batch rather than per pair, for the same reason
+    emit_assert_same_as_many exists -- EventLog.batch() serialises on
+    one connection, so per-event transactions are the bottleneck.
+
+    All-or-nothing: the batch is one transaction, so the return value
+    is len(rows) or 0. Failures are logged, not raised, and 0 is what
+    tells the caller nothing landed -- a caller that records the
+    correction in Neo4j must do so only on a full batch, or a dropped
+    batch leaves a wrong :SAME_AS standing behind a :NOT_SAME_AS that
+    says it was withdrawn.
+    """
+    if not rows:
+        return 0
+    try:
+        return await asyncio.to_thread(_emit_retract_many_sync, rows, producer)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "eventlog: batched RetractSameAs emit failed ({n} events) — "
+            "the owl:sameAs / :SAME_AS may still stand",
+            n=len(rows),
+        )
+        return 0

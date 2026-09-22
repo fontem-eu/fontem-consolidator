@@ -123,6 +123,13 @@ INDEX_CYPHER = [
     # is an index seek, not a Company label scan.
     "CREATE INDEX company_registered_as_country IF NOT EXISTS "
     "FOR (c:Company) ON (c.registered_as, c.country)",
+    # national_id + country: the Authority's published legal id (eForms
+    # buyer cbc:CompanyID / TED nationalRegistrationNumber). GET
+    # /fiscal-id asks for it per hypothesis -- up to a dozen countries
+    # for a bare 9-digit number -- so it must be a seek, not a label
+    # scan per call. Composite for the same reason as registered_as.
+    "CREATE INDEX authority_national_id_country IF NOT EXISTS "
+    "FOR (a:Authority) ON (a.national_id, a.country)",
     # Vector index on Authority name_embedding (mistral-embed, 1024-d,
     # cosine — see AUTHORITY_NAME_EMBEDDING_DIMS).
     # Powers the embedding_cosine_authority rule's k-NN lookup; without

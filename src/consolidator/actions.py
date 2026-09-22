@@ -40,7 +40,9 @@ sets ``Rule.force_auto_merge = True``) bypasses that gate. Reserved for
 deterministic identifier matches — see ``rules/base.py``.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from neo4j import AsyncDriver
 
@@ -522,3 +524,84 @@ async def _enrich(
             # `WHERE a.multilingual_updated_at > datetime(...)` filters work.
             now=datetime.now(timezone.utc),
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Corrections. The Neo4j half of withdrawing a published equivalence,
+# shared by POST /same-as/{a}/{b}/correct (one pair, an operator) and
+# retract_junk_names (every pair of a junk-named node, a Job). The
+# RetractSameAs event itself is the caller's to emit; this records what
+# the sink will also record, so Neo4j is right before the sink catches
+# up and stays right if the event is ever replayed.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Correction:
+    """One pair an operator or a cleanup has ruled NOT the same.
+
+    `from_id` -> `to_id` is the direction the :NOT_SAME_AS edge takes,
+    which must be the (a_iri, b_iri) order of the RetractSameAs emitted
+    for it: the sink MERGEs its own edge in that direction, and a
+    mismatch would leave two edges for one correction."""
+
+    label: str
+    from_id: str
+    to_id: str
+    reviewer: str
+    reason: str
+    retracted_method: str | None = None
+
+
+async def record_correction(session, c: Correction) -> None:
+    """Drop the settled candidate, MERGE :NOT_SAME_AS, log the decision.
+
+    The :NOT_SAME_AS edge is permanent and outranks every rule: it blocks
+    the pair from being re-asserted or re-proposed, which matters because
+    the rule that got it wrong is deterministic and would otherwise reach
+    the same conclusion on the next sweep. Idempotent: MERGE on the edge,
+    and a second call only refreshes its provenance -- but it does write
+    a second DecisionLog row, so callers that re-run skip pairs already
+    carrying the edge (retract_junk_names does, in its read query).
+    """
+    id_key = _id_key(c.label)
+    await session.run(
+        f"""
+        MATCH (a:{c.label} {{{id_key}: $from}})
+        MATCH (b:{c.label} {{{id_key}: $to}})
+        OPTIONAL MATCH (a)-[c:SAME_AS_CANDIDATE]-(b)
+        DELETE c
+        WITH a, b
+        MERGE (a)-[n:NOT_SAME_AS]->(b)
+        SET n.decided_at = $now, n.reviewer = $reviewer,
+            n.reason = $reason, n.retracted_method = $method
+        """,
+        **{
+            "from": c.from_id, "to": c.to_id, "now": _now(),
+            "reviewer": c.reviewer, "reason": c.reason,
+            "method": c.retracted_method,
+        },
+    )
+    await session.run(
+        """
+        CREATE (dl:DecisionLog {
+          decision_id: $decision_id,
+          decided_at: $decided_at,
+          decision_type: 'manual_correction',
+          rule_name: $rule_name,
+          source_id: $source_id,
+          target_id: $target_id,
+          entity_type: $entity_type,
+          reviewer: $reviewer,
+          review_note: $note
+        })
+        """,
+        decision_id=str(uuid4()),
+        decided_at=_now(),
+        rule_name=c.retracted_method,
+        source_id=c.from_id,
+        target_id=c.to_id,
+        entity_type=c.label,
+        reviewer=c.reviewer,
+        note=c.reason,
+    )

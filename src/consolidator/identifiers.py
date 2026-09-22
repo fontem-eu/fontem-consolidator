@@ -126,3 +126,64 @@ def canon_registration_number(raw: str | None) -> str | None:
 def looks_like_ted_notice(raw: str | None) -> bool:
     """True when the value has the TED publication-notice shape (`1234-5-6-1`)."""
     return bool(raw and _TED_NOTICE_RE.match(raw.strip()))
+
+
+# ── Fiscal-number lookups (GET /fiscal-id, data-backlog C3) ───────────
+
+# VIES prefix per ISO-3 country: the EU-27, the EEA (NO/IS/LI), GB and
+# CH. Greece files as EL on VIES while GLEIF-sourced values carry GR, so
+# EL expands to both when a VAT form is built (_VAT_PREFIX_ALIASES).
+# Only the EU prefixes have a pattern in _VAT_BY_COUNTRY: CH/NO/IS/LI
+# get a prefix but canon_vat rejects the result, so a fiscal-id lookup
+# for those countries runs on the registry number alone.
+ISO3_TO_VAT_PREFIX: dict[str, str] = {
+    "AUT": "AT", "BEL": "BE", "BGR": "BG", "CYP": "CY", "CZE": "CZ",
+    "DEU": "DE", "DNK": "DK", "EST": "EE", "GRC": "EL", "ESP": "ES",
+    "FIN": "FI", "FRA": "FR", "HRV": "HR", "HUN": "HU", "IRL": "IE",
+    "ITA": "IT", "LTU": "LT", "LUX": "LU", "LVA": "LV", "MLT": "MT",
+    "NLD": "NL", "POL": "PL", "PRT": "PT", "ROU": "RO", "SWE": "SE",
+    "SVN": "SI", "SVK": "SK",
+    "GBR": "GB", "CHE": "CH", "NOR": "NO", "ISL": "IS", "LIE": "LI",
+}
+
+_VAT_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {"EL": ("EL", "GR")}
+
+
+def normalise_id(raw: str | None) -> str:
+    """An identifier as it is compared: whitespace, dots, hyphens and
+    slashes removed, upper-cased. Empty when nothing is left."""
+    return _strip_punct(raw) if raw else ""
+
+
+def known_vat_prefixes() -> tuple[str, ...]:
+    """Every prefix canon_vat has a pattern for, EL and GR both."""
+    return tuple(_VAT_BY_COUNTRY)
+
+
+def vat_prefixes(iso3: str | None) -> tuple[str, ...]:
+    """The VIES prefix(es) a country's VAT carries; empty when unknown."""
+    primary = ISO3_TO_VAT_PREFIX.get((iso3 or "").upper())
+    if primary is None:
+        return ()
+    return _VAT_PREFIX_ALIASES.get(primary, (primary,))
+
+
+def split_vat(raw: str | None) -> tuple[str, str] | None:
+    """(prefix, national part) of a well-formed VAT, else None. The
+    national part is what registers and eForms `cbc:CompanyID` carry
+    bare, so it is what registered_as / national_id are matched on."""
+    canonical = canon_vat(raw)
+    if canonical is None:
+        return None
+    return canonical[:2], canonical[2:]
+
+
+def vat_forms(iso3: str, number: str) -> list[str]:
+    """The canonical VAT strings a bare number takes in a country, VIES
+    spelling first. Empty when no prefix makes a well-formed VAT of it."""
+    forms = []
+    for prefix in vat_prefixes(iso3):
+        canonical = canon_vat(prefix + number)
+        if canonical is not None and canonical not in forms:
+            forms.append(canonical)
+    return forms
