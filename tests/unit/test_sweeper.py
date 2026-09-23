@@ -396,6 +396,37 @@ async def test_run_applies_migrations_before_starting_any_sweep():
 
 
 @pytest.mark.asyncio
+async def test_run_serves_metrics_before_the_warm_up():
+    """Both probes GET :9100/metrics with no initialDelaySeconds, so the
+    port has to be open before the unbounded warm-up runs. On fontem-prod
+    the backfill's scan alone took 92 s against a 90 s liveness budget and
+    the sweeper crash-looped, killed seconds before it could finish."""
+    order = []
+    cfg = sweeper.SweeperConfig(labels=["Company"], page_size=10)
+
+    async def _migrate(*_a, **_k):
+        order.append("migrate")
+
+    async def _sweep(*_a, **_k):
+        order.append("sweep")
+
+    with patch.object(sweeper, "get_driver", AsyncMock(return_value=AsyncMock())), \
+         patch.object(sweeper.migrations, "apply", _migrate), \
+         patch.object(sweeper, "load_rules"), \
+         patch.object(sweeper, "start_http_server",
+                      side_effect=lambda *_a, **_k: order.append("metrics")), \
+         patch.object(sweeper, "sweep_label", _sweep), \
+         patch.object(sweeper, "close_driver", AsyncMock()):
+        task = asyncio.create_task(sweeper.run(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert order[0] == "metrics", order
+    assert "migrate" in order and order.index("metrics") < order.index("migrate")
+
+
+@pytest.mark.asyncio
 async def test_run_spawns_one_task_per_configured_label():
     cfg = sweeper.SweeperConfig(labels=["Company", "Authority"], page_size=5)
     seen = []
