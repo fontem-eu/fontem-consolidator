@@ -49,7 +49,10 @@ from src.consolidator.clients.linguistics import (
     LinguisticsUnavailable,
 )
 from src.consolidator.rules.base import Decision
-from src.consolidator.rules.multilingual_shared import source_lang_from_country
+from src.consolidator.rules.multilingual_shared import (
+    COUNTRY_PRIMARY_LANG,
+    source_lang_from_country,
+)
 
 #: What one title into 23 languages costs, measured 2026-09-23 on
 #: google/gemma-3-27b-it (138 prompt + 830 completion tokens at
@@ -81,7 +84,10 @@ class Progress:  # pylint: disable=too-many-instance-attributes
     """What the run did, in the terms someone paying for it would ask."""
 
     considered: int = 0
+    distinct_titles: int = 0
     translated: int = 0
+    billed_titles: int = 0
+    max_title_cost: float = 0.0
     skipped_complete: int = 0
     failed: int = 0
     spent_usd: float = 0.0
@@ -94,8 +100,9 @@ class Progress:  # pylint: disable=too-many-instance-attributes
         head = "would translate" if dry_run else "translated"
         lines = [
             f"{label}: {head} {self.translated} of {self.considered} considered",
+            f"  distinct titles   : {self.distinct_titles}",
             f"  languages written : {self.languages_written}",
-            f"  already complete  : {self.skipped_complete}",
+            f"  already translated: {self.skipped_complete} (skipped, not reprocessed)",
             f"  failed            : {self.failed}",
             f"  spent             : ${self.spent_usd:.4f}",
             f"  stopped because   : {self.stopped_because}",
@@ -107,23 +114,16 @@ class Progress:  # pylint: disable=too-many-instance-attributes
         return "\n".join(lines)
 
 
-def missing_targets(props: dict, source_lang: str) -> list[str]:
-    """EU locales with no title_<lang> yet. Never the source language."""
-    return [
-        code for code in EU_OFFICIAL_LANGS
-        if code != source_lang and not props.get(f"title_{code}")
-    ]
-
-
 async def select_by_value(
     driver: AsyncDriver, database: str, label: str, limit: int,
 ) -> list[dict]:
     """The `limit` most valuable titled nodes of `label`, richest first.
 
-    Reads the whole property bag rather than a projection: deciding what is
-    missing needs the 23 `title_<lang>` properties, and asking for them by
-    name would be a 23-term RETURN that drifts the moment the language list
-    changes.
+    Reads the whole property bag rather than a projection: deciding whether
+    a node is already translated needs its `title_<lang>` properties, and
+    naming 24 of them in a RETURN would drift when the language list does.
+    No index on the value property in prod, so this is a label scan — about a
+    minute on 2.8M contracts. Run once per backfill, not per round.
     """
     value_prop = VALUE_PROPERTY[label]
     query = (
@@ -137,6 +137,7 @@ async def select_by_value(
 
 
 async def count_candidates(driver: AsyncDriver, database: str, label: str) -> int:
+    """Titled nodes with a value — the population the percentage is of."""
     value_prop = VALUE_PROPERTY[label]
     query = (
         f"MATCH (n:{label}) "
@@ -149,21 +150,192 @@ async def count_candidates(driver: AsyncDriver, database: str, label: str) -> in
         return int(record["n"]) if record else 0
 
 
-async def _translate_one(
-    client: LinguisticsClient, props: dict, label: str,
-) -> tuple[dict[str, str], str, float]:
-    """``(translations, source_lang, cost)`` for one node."""
-    source_lang = source_lang_from_country(props.get(COUNTRY_PROPERTY[label]))
-    targets = missing_targets(props, source_lang)
-    if not targets:
-        return {}, source_lang, 0.0
-    translations, cost = await client.translate_with_cost(
-        text=props["title"], source_lang=source_lang, targets=targets,
-    )
-    return translations, source_lang, cost
+#: BCP-47 "undetermined": linguistics asks the model to identify the
+#: language rather than being told one.
+UNDETERMINED = "und"
+
+#: Countries whose notices are not reliably in the language the country map
+#: gives. Belgium publishes in French and Dutch; Luxembourg in French, German
+#: and English; most Maltese TED notices are in English; Finland publishes in
+#: Swedish too. For these, and for any country the map does not know (Norway,
+#: Switzerland, the candidate countries), the model identifies the language.
+UNRELIABLE_COUNTRIES = frozenset({"BEL", "LUX", "MLT", "FIN"})
+
+#: Distinct titles per round. Small enough to keep the order close to strict
+#: value order under a budget cut-off, large enough to be worth a batch call.
+ROUND_SIZE = 32
 
 
-async def run(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+@dataclass(frozen=True)
+class Destination:
+    """Where translated titles are written — or, in a dry run, are not."""
+
+    driver: AsyncDriver
+    database: str
+    label: str
+    apply_changes: bool
+
+
+@dataclass
+class WorkItem:
+    """One distinct title to translate, and every node that carries it."""
+
+    title: str
+    source_lang: str
+    targets: list[str]
+    node_ids: list[str]
+    value: float
+
+
+def already_translated(props: dict) -> bool:
+    """Any translated title at all. The owner's rule is not to reprocess."""
+    return any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS)
+
+
+def source_language(props: dict, label: str) -> str:
+    """The title's language when the country tells us, else "und".
+
+    Guessing wrong is not neutral: a Norwegian title labelled English is
+    translated from the wrong language, and English itself is never
+    requested because the runner believes it already has it.
+    """
+    country = (props.get(COUNTRY_PROPERTY[label]) or "").upper()
+    if country in UNRELIABLE_COUNTRIES or country not in COUNTRY_PRIMARY_LANG:
+        return UNDETERMINED
+    return source_lang_from_country(country)
+
+
+def targets_for(source_lang: str) -> list[str]:
+    """Every EU language except the source; all of them when it is unknown,
+    since the model returns the source's own entry unchanged."""
+    if source_lang == UNDETERMINED:
+        return list(EU_OFFICIAL_LANGS)
+    return [code for code in EU_OFFICIAL_LANGS if code != source_lang]
+
+
+def plan(rows: list[dict], label: str) -> tuple[list[WorkItem], int]:
+    """Value-ordered, de-duplicated work, and how many nodes were skipped.
+
+    Identical (title, language) pairs collapse into one item: framework
+    agreements republish the same title, and translating it once is the same
+    translation at a fraction of the cost.
+    """
+    by_key: dict[tuple[str, str], WorkItem] = {}
+    skipped = 0
+    for props in rows:
+        if already_translated(props):
+            skipped += 1
+            continue
+        lang = source_language(props, label)
+        key = (props["title"], lang)
+        node_id = str(props.get(ID_PROPERTY[label]))
+        if key in by_key:
+            by_key[key].node_ids.append(node_id)
+            continue
+        by_key[key] = WorkItem(
+            title=props["title"], source_lang=lang, targets=targets_for(lang),
+            node_ids=[node_id], value=float(props.get(VALUE_PROPERTY[label]) or 0),
+        )
+    return list(by_key.values()), skipped
+
+
+def items_that_fit(progress: "Progress", wanted: int, budget_usd: float) -> int:
+    """How many more titles the budget allows before the next round.
+
+    Nothing has been billed yet: send ONE title and measure it. Pricing a
+    whole round from the seed estimate would stake up to ROUND_SIZE titles on
+    that guess being right — at a dearer model, a round could overshoot the
+    budget by 30 titles before the runner learned the real price.
+
+    After that, each title is priced at the most expensive one seen so far,
+    not the average: titles vary in length, and the cap should hold for the
+    long ones too.
+    """
+    room = budget_usd - progress.spent_usd
+    if not progress.billed_titles:
+        return 1 if room >= SEED_COST_USD else 0
+    per_title = progress.max_title_cost
+    return max(0, min(wanted, int(room // per_title))) if per_title > 0 else wanted
+
+
+async def translate_round(
+    client: LinguisticsClient, items: list[WorkItem],
+) -> list[tuple[WorkItem, dict[str, str], float, str | None]]:
+    """One batch call per source language in the round, results in item order."""
+    by_lang: dict[str, list[WorkItem]] = {}
+    for item in items:
+        by_lang.setdefault(item.source_lang, []).append(item)
+
+    done: dict[int, tuple[dict[str, str], float, str | None]] = {}
+    for lang, group in by_lang.items():
+        results = await client.translate_batch_with_cost(
+            [(i.title, lang) for i in group], targets_for(lang),
+        )
+        for item, result in zip(group, results):
+            done[id(item)] = result
+    return [(item, *done[id(item)]) for item in items]
+
+
+async def bank(
+    dest: Destination,
+    outcome: tuple[WorkItem, dict[str, str], float, str | None],
+    progress: "Progress",
+) -> None:
+    """Record one title's result, and write it to every node that carries it."""
+    item, translations, cost, error = outcome
+    progress.spent_usd += cost
+    if cost:
+        progress.billed_titles += 1
+        progress.max_title_cost = max(progress.max_title_cost, cost)
+    if error or not translations:
+        progress.failed += 1
+        progress.failures.append(f"{item.node_ids[0]}: {error or 'empty response'}")
+        return
+
+    progress.translated += len(item.node_ids)
+    progress.languages_written += len(translations) * len(item.node_ids)
+    if not dest.apply_changes:
+        return
+    # "und" means we do not know the title's language, so we do not claim one.
+    source = None if item.source_lang == UNDETERMINED else item.source_lang
+    for node_id in item.node_ids:
+        await _enrich(dest.driver, dest.database, decision=Decision(
+            rule_name="backfill_translations", action="enrich",
+            source_id=node_id, target_id=node_id, confidence=1.0,
+            entity_type=dest.label,
+            details={"field": "title", "translations": translations,
+                     "source_lang": source},
+        ))
+
+
+async def work_down(
+    client: LinguisticsClient, work: list[WorkItem], progress: "Progress",
+    dest: Destination, budget_usd: float,
+) -> None:
+    """Take rounds off the value-ordered work until it or the budget ends."""
+    cursor = 0
+    while cursor < len(work):
+        fit = items_that_fit(progress, min(ROUND_SIZE, len(work) - cursor), budget_usd)
+        if fit == 0:
+            progress.stopped_because = f"budget reached (${budget_usd:.2f})"
+            return
+        round_items = work[cursor:cursor + fit]
+        cursor += fit
+        progress.last_value = round_items[-1].value
+        try:
+            outcomes = await translate_round(client, round_items)
+        except LinguisticsUnavailable as exc:
+            progress.stopped_because = f"linguistics unavailable: {exc}"
+            return
+        except LinguisticsError as exc:
+            progress.failed += len(round_items)
+            progress.failures.append(f"round at {cursor - fit}: {exc}")
+            continue
+        for outcome in outcomes:
+            await bank(dest, outcome, progress)
+
+
+async def run(  # pylint: disable=too-many-arguments
     driver: AsyncDriver,
     database: str,
     *,
@@ -173,68 +345,20 @@ async def run(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     apply_changes: bool,
     backend: str = "nebius",
 ) -> Progress:
-    """Translate down the value order until the selection or the budget ends."""
-    progress = Progress()
+    """Select the richest `limit` nodes, skip the translated, translate the
+    rest down the value order until the selection or the budget runs out."""
     rows = await select_by_value(driver, database, label, limit)
-    value_prop = VALUE_PROPERTY[label]
-    billed_calls = 0
-
+    work, skipped = plan(rows, label)
+    progress = Progress(considered=len(rows), skipped_complete=skipped,
+                        distinct_titles=len(work))
     async with LinguisticsClient(
         base_url=settings.linguistics_url,
         timeout_s=settings.linguistics_timeout_s,
         translation_backend=backend,
         embedding_backend=settings.linguistics_embedding_backend,
     ) as client:
-        for props in rows:
-            # Stop BEFORE the call that would cross the line, priced at what
-            # calls have actually been costing. Stopping once spent exceeds
-            # the budget would mean the last call had already crossed it —
-            # a cap you notice rather than one you hold.
-            expected = (progress.spent_usd / billed_calls) if billed_calls else SEED_COST_USD
-            if progress.spent_usd + expected > budget_usd:
-                progress.stopped_because = (
-                    f"budget reached (${budget_usd:.2f}; next call ~${expected:.5f})"
-                )
-                break
-
-            progress.considered += 1
-            progress.last_value = props.get(value_prop)
-
-            try:
-                translations, source_lang, cost = await _translate_one(client, props, label)
-            except (LinguisticsUnavailable, LinguisticsError) as exc:
-                progress.failed += 1
-                progress.failures.append(f"{props.get(ID_PROPERTY[label])}: {exc}")
-                if isinstance(exc, LinguisticsUnavailable):
-                    progress.stopped_because = f"linguistics unavailable: {exc}"
-                    break
-                continue
-
-            progress.spent_usd += cost
-            if cost:
-                billed_calls += 1
-            if not translations:
-                progress.skipped_complete += 1
-                continue
-
-            progress.translated += 1
-            progress.languages_written += len(translations)
-
-            if apply_changes:
-                await _enrich(driver, database, decision=Decision(
-                    rule_name="backfill_translations",
-                    action="enrich",
-                    source_id=str(props.get(ID_PROPERTY[label])),
-                    target_id=str(props.get(ID_PROPERTY[label])),
-                    confidence=1.0,
-                    entity_type=label,
-                    details={
-                        "field": "title",
-                        "translations": translations,
-                        "source_lang": source_lang,
-                    },
-                ))
-
+        await work_down(client, work, progress,
+                        Destination(driver, database, label, apply_changes), budget_usd)
     return progress
 
 

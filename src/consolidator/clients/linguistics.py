@@ -88,6 +88,29 @@ class LinguisticsClient:
         })
         return dict(resp.get("translations", {})), float(resp.get("cost_usd") or 0.0)
 
+    async def translate_batch_with_cost(
+        self, items: list[tuple[str, str]], targets: list[str],
+    ) -> list[tuple[dict[str, str], float, str | None]]:
+        """Many texts, one request: ``[(translations, cost_usd, error), ...]``.
+
+        `items` are ``(text, source_lang)`` pairs sharing one target list, in
+        the order returned. The service runs them through a bounded window
+        and reports each item's own cost and failure, so a caller can bank
+        what succeeded and count what it was charged even when some items
+        come back empty.
+        """
+        if not items:
+            return []
+        resp = await self._post_json("/translate/batch", {
+            "items": [{"text": t, "source_lang": s} for t, s in items],
+            "targets": targets,
+            "backend": self.translation_backend,
+        })
+        return [
+            (dict(r.get("translations") or {}), float(r.get("cost_usd") or 0.0), r.get("error"))
+            for r in resp.get("results", [])
+        ]
+
     async def embed(self, text: str) -> tuple[list[float], str]:
         """Return (vector, encoder_id).
 
