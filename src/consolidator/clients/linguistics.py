@@ -66,11 +66,27 @@ class LinguisticsClient:
         tgts = [l for l in (targets or EU_OFFICIAL_LANGS) if l != source_lang]
         if not tgts:
             return {}
+        translations, _cost = await self.translate_with_cost(text, source_lang, targets)
+        return translations
+
+    async def translate_with_cost(
+        self, text: str, source_lang: str, targets: list[str] | None = None,
+    ) -> tuple[dict[str, str], float]:
+        """As `translate`, plus what the provider charged for the call.
+
+        Zero for a cache hit and for the local backends. A caller running to
+        a budget accumulates this instead of estimating from token counts;
+        an older linguistics without the field reports 0.0, which reads as
+        "free" rather than crashing — the service-side cap still holds.
+        """
+        tgts = [l for l in (targets or EU_OFFICIAL_LANGS) if l != source_lang]
+        if not tgts:
+            return {}, 0.0
         resp = await self._post_json("/translate", {
             "text": text, "source_lang": source_lang,
             "targets": tgts, "backend": self.translation_backend,
         })
-        return dict(resp.get("translations", {}))
+        return dict(resp.get("translations", {})), float(resp.get("cost_usd") or 0.0)
 
     async def embed(self, text: str) -> tuple[list[float], str]:
         """Return (vector, encoder_id).

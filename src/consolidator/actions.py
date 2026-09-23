@@ -54,6 +54,9 @@ _ID_KEY_BY_LABEL: dict[str, str] = {
     "Company": "gmr_id",
     "Authority": "authority_id",
     "Contract": "ted_notice_id",
+    # Kohesio's own key. Without this entry _id_key falls back to
+    # "authority_id" and the write would match nothing, silently.
+    "CohesionProject": "disclosure_id",
 }
 
 # IRI scheme matches the producers (gmr-virtuoso-sink, gmr-neo4j-sink).
@@ -62,6 +65,7 @@ _IRI_LABEL_BY_TYPE: dict[str, str] = {
     "Company":   "Company",
     "Authority": "Authority",
     "Contract":  "Contract",
+    "CohesionProject": "CohesionProject",
 }
 
 
