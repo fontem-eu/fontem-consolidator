@@ -503,17 +503,33 @@ async def _sweep_page(  # pylint: disable=too-many-arguments
 async def run(config: SweeperConfig | None = None) -> None:
     config = config or SweeperConfig.from_env()
     driver = await get_driver()
-    # The sweeper is its own process (separate Deployment from the API
-    # pod), so it ensures its own indexes — notably the
-    # {company,authority}_last_consolidated range indexes the oldest-
-    # first page depends on. All statements are IF NOT EXISTS / idempotent.
-    await migrations.apply(driver, settings.neo4j_database)
+    # Serve /metrics BEFORE the warm-up, not after it. Both probes on
+    # this Deployment are HTTP GETs of :9100/metrics with no
+    # initialDelaySeconds, so until the port is open the pod is both
+    # unready and — after failureThreshold 3 x periodSeconds 30 — killed.
+    # The warm-up below is unbounded work against a growing graph: on
+    # fontem-prod on 2026-09-23 the first backfill statement's scan alone
+    # took 92 s against that 90 s budget, so every restart killed the pod
+    # a few seconds before it finished and the sweeper crash-looped.
+    # prometheus_client serves from its own daemon thread, so the port
+    # answers while this coroutine is still blocked on Neo4j.
     load_rules()
     start_http_server(config.metrics_port)
     logger.info(
         "sweeper: metrics on :{port}, labels={labels}",
         port=config.metrics_port, labels=config.labels,
     )
+
+    # The sweeper is its own process (separate Deployment from the API
+    # pod), so it ensures its own indexes — notably the
+    # {company,authority}_last_consolidated range indexes the oldest-
+    # first page depends on. All statements are IF NOT EXISTS /
+    # idempotent. The name_clean backfill inside is a full label scan
+    # per label; it is logged either side so a slow start is visible as
+    # a warm-up rather than as silence.
+    logger.info("sweeper: ensuring indexes and backfills")
+    await migrations.apply(driver, settings.neo4j_database)
+    logger.info("sweeper: warm-up complete, starting sweep")
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
