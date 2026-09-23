@@ -91,6 +91,8 @@ class Progress:  # pylint: disable=too-many-instance-attributes
     skipped_complete: int = 0
     failed: int = 0
     spent_usd: float = 0.0
+    unaccounted_usd: float = 0.0
+    estimated_usd: float = 0.0
     languages_written: int = 0
     stopped_because: str = "finished the selection"
     last_value: float | None = None
@@ -98,15 +100,20 @@ class Progress:  # pylint: disable=too-many-instance-attributes
 
     def report(self, label: str, dry_run: bool) -> str:
         head = "would translate" if dry_run else "translated"
+        money = (f"  estimated cost    : ${self.estimated_usd:.4f} (nothing sent)" if dry_run
+                 else f"  spent             : ${self.spent_usd:.4f}")
         lines = [
             f"{label}: {head} {self.translated} of {self.considered} considered",
             f"  distinct titles   : {self.distinct_titles}",
             f"  languages written : {self.languages_written}",
             f"  already translated: {self.skipped_complete} (skipped, not reprocessed)",
             f"  failed            : {self.failed}",
-            f"  spent             : ${self.spent_usd:.4f}",
-            f"  stopped because   : {self.stopped_because}",
+            money,
         ]
+        if self.unaccounted_usd:
+            lines.append(f"  unaccounted       : up to ${self.unaccounted_usd:.4f}"
+                         " (a round was cut off after it was sent)")
+        lines.append(f"  stopped because   : {self.stopped_because}")
         if self.last_value is not None:
             lines.append(f"  reached down to   : {self.last_value:,.0f} EUR")
         for f in self.failures[:5]:
@@ -164,6 +171,12 @@ UNRELIABLE_COUNTRIES = frozenset({"BEL", "LUX", "MLT", "FIN"})
 #: Distinct titles per round. Small enough to keep the order close to strict
 #: value order under a budget cut-off, large enough to be worth a batch call.
 ROUND_SIZE = 32
+
+#: How long to wait for one round. The service translates a batch through an
+#: 8-wide window, so 32 titles are four provider calls back to back, each
+#: allowed 120 s plus retries there. The consolidator's usual 60 s is sized
+#: for one title and would cut most rounds off after they had been paid for.
+ROUND_TIMEOUT_S = 900.0
 
 
 @dataclass(frozen=True)
@@ -308,6 +321,24 @@ async def bank(
         ))
 
 
+def estimate(work: list[WorkItem], progress: "Progress", budget_usd: float) -> None:
+    """What a real run would do, priced at the measured per-title cost.
+
+    Sends nothing. A dry run that called the provider would be a paid run
+    whose results were thrown away.
+    """
+    affordable = work[:int(budget_usd // SEED_COST_USD)]
+    progress.translated = sum(len(i.node_ids) for i in affordable)
+    progress.languages_written = sum(len(i.targets) * len(i.node_ids) for i in affordable)
+    progress.estimated_usd = len(affordable) * SEED_COST_USD
+    if affordable:
+        progress.last_value = affordable[-1].value
+    progress.stopped_because = (
+        "dry run: the whole selection fits the budget" if len(affordable) == len(work)
+        else f"dry run: the budget would stop it after {len(affordable)} titles"
+    )
+
+
 async def work_down(
     client: LinguisticsClient, work: list[WorkItem], progress: "Progress",
     dest: Destination, budget_usd: float,
@@ -325,6 +356,10 @@ async def work_down(
         try:
             outcomes = await translate_round(client, round_items)
         except LinguisticsUnavailable as exc:
+            # A timeout may land after the provider has billed the round, and
+            # the per-item costs went down with the response. Count it at its
+            # worst so the report never claims less than was spent.
+            progress.unaccounted_usd += fit * max(progress.max_title_cost, SEED_COST_USD)
             progress.stopped_because = f"linguistics unavailable: {exc}"
             return
         except LinguisticsError as exc:
@@ -351,9 +386,12 @@ async def run(  # pylint: disable=too-many-arguments
     work, skipped = plan(rows, label)
     progress = Progress(considered=len(rows), skipped_complete=skipped,
                         distinct_titles=len(work))
+    if not apply_changes:
+        estimate(work, progress, budget_usd)
+        return progress
     async with LinguisticsClient(
         base_url=settings.linguistics_url,
-        timeout_s=settings.linguistics_timeout_s,
+        timeout_s=max(settings.linguistics_timeout_s, ROUND_TIMEOUT_S),
         translation_backend=backend,
         embedding_backend=settings.linguistics_embedding_backend,
     ) as client:
@@ -379,8 +417,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--apply", action="store_true",
-        help="Write the translations. Without it, nothing is written and "
-             "nothing is spent beyond the reads.",
+        help="Translate and write. Without it, nothing is sent to the provider "
+             "and nothing is written: the selection is planned and priced at "
+             "the measured per-title cost.",
     )
     return parser
 

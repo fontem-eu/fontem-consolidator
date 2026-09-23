@@ -15,6 +15,8 @@ import src.consolidator.backfill_translations as backfill
 from src.consolidator.backfill_translations import (
     COUNTRY_PROPERTY,
     ID_PROPERTY,
+    ROUND_TIMEOUT_S,
+    SEED_COST_USD,
     UNDETERMINED,
     VALUE_PROPERTY,
     Progress,
@@ -29,9 +31,6 @@ from src.consolidator.clients.linguistics import (
     LinguisticsError,
     LinguisticsUnavailable,
 )
-
-pytestmark = pytest.mark.asyncio
-
 
 @dataclass
 class FakeClient:
@@ -184,6 +183,7 @@ def test_identical_titles_are_translated_once():
 
 
 @pytest.mark.usefixtures("writes")
+@pytest.mark.asyncio
 async def test_the_first_title_prices_the_rest(monkeypatch):
     """A round priced from the seed estimate would stake 32 titles on the
     guess; the probe measures one first."""
@@ -194,6 +194,7 @@ async def test_the_first_title_prices_the_rest(monkeypatch):
     assert sum(len(items) for items, _t in client.calls) * 0.10 <= 0.35
 
 
+@pytest.mark.asyncio
 async def test_it_stops_before_crossing_the_budget(monkeypatch, writes):
     rows = [_contract(f"n{i}", 1000 - i, f"title {i}") for i in range(10)]
     client = FakeClient(cost_per_item=0.10)
@@ -204,6 +205,7 @@ async def test_it_stops_before_crossing_the_budget(monkeypatch, writes):
     assert len(writes) == 2
 
 
+@pytest.mark.asyncio
 async def test_it_counts_what_was_charged(monkeypatch, writes):
     progress = await _run([_contract("n1", 100)], FakeClient(cost_per_item=0.00035),
                           monkeypatch)
@@ -212,6 +214,7 @@ async def test_it_counts_what_was_charged(monkeypatch, writes):
     assert len(writes) == 1
 
 
+@pytest.mark.asyncio
 async def test_nothing_already_translated_is_paid_for(monkeypatch, writes):
     rows = [_contract("done", 999, title_de="schon"), _contract("new", 5)]
     client = FakeClient()
@@ -222,6 +225,7 @@ async def test_nothing_already_translated_is_paid_for(monkeypatch, writes):
 
 
 @pytest.mark.usefixtures("writes")
+@pytest.mark.asyncio
 async def test_it_works_richest_first(monkeypatch):
     """When only one title fits, it must be the biggest contract's."""
     rows = [_contract("big", 9_000_000, "Duży"), _contract("small", 12, "Mały")]
@@ -234,6 +238,7 @@ async def test_it_works_richest_first(monkeypatch):
 
 
 @pytest.mark.usefixtures("writes")
+@pytest.mark.asyncio
 async def test_a_batch_never_mixes_source_languages(monkeypatch):
     """Targets are shared across a batch, so a batch must share a source:
     a Polish title's batch cannot ask for Polish, a Norwegian one must ask
@@ -254,6 +259,7 @@ async def test_a_batch_never_mixes_source_languages(monkeypatch):
         == ["Deutsch", "Norsk", "Też polski"]
 
 
+@pytest.mark.asyncio
 async def test_a_duplicate_title_is_written_to_every_node(monkeypatch, writes):
     rows = [_contract("a", 9, "Same", "GBR"), _contract("b", 9, "Same", "GBR")]
     client = FakeClient()
@@ -263,6 +269,7 @@ async def test_a_duplicate_title_is_written_to_every_node(monkeypatch, writes):
     assert progress.translated == 2 and progress.spent_usd == pytest.approx(0.00035)
 
 
+@pytest.mark.asyncio
 async def test_an_undetermined_language_is_not_written_as_a_claim(monkeypatch, writes):
     await _run([_contract("n", 9, "Anskaffelse", "NOR")], FakeClient(), monkeypatch)
     assert writes[0].details["source_lang"] is None
@@ -273,6 +280,7 @@ async def test_an_undetermined_language_is_not_written_as_a_claim(monkeypatch, w
 # ── failure ───────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_one_failed_title_does_not_cost_the_others(monkeypatch, writes):
     rows = [_contract("a", 9, "good one"), _contract("b", 8, "bad one"),
             _contract("c", 7, "good two")]
@@ -281,27 +289,83 @@ async def test_one_failed_title_does_not_cost_the_others(monkeypatch, writes):
     assert sorted(d.source_id for d in writes) == ["a", "c"]
 
 
+@pytest.mark.asyncio
 async def test_the_service_being_down_stops_the_run(monkeypatch, writes):
     progress = await _run([_contract("n", 9)], FakeClient(raises=LinguisticsUnavailable("503")),
                           monkeypatch)
     assert "unavailable" in progress.stopped_because and not writes
 
 
+@pytest.mark.asyncio
 async def test_a_hard_error_skips_the_round_not_the_run(monkeypatch, writes):
     progress = await _run([_contract("n", 9)], FakeClient(raises=LinguisticsError("400")),
                           monkeypatch)
     assert progress.failed == 1 and not writes
 
 
-async def test_a_dry_run_writes_nothing(monkeypatch, writes):
-    progress = await _run([_contract("n", 9)], FakeClient(), monkeypatch, apply_changes=False)
-    assert progress.translated == 1 and not writes
+@pytest.mark.asyncio
+async def test_a_cut_off_round_is_counted_at_its_worst(monkeypatch, writes):
+    """A timeout can land after the provider billed the round; the report
+    must not claim less than was spent."""
+    class CutOffSecondRound(FakeClient):
+        async def translate_batch_with_cost(self, items, targets):
+            if self.calls:
+                raise LinguisticsUnavailable("ReadTimeout")
+            return await super().translate_batch_with_cost(items, targets)
+
+    rows = [_contract(str(i), 100 - i, f"title {i}") for i in range(10)]
+    progress = await _run(rows, CutOffSecondRound(cost_per_item=0.001), monkeypatch)
+    # Probe of one title, then a round of the other nine that never came back.
+    assert progress.spent_usd == pytest.approx(0.001)
+    assert progress.unaccounted_usd == pytest.approx(9 * 0.001)
+    assert len(writes) == 1 and "unavailable" in progress.stopped_because
 
 
-def test_the_report_says_what_it_spent_and_skipped():
-    text = Progress(considered=3, distinct_titles=2, translated=2, skipped_complete=1,
-                    spent_usd=0.0007, languages_written=46,
-                    last_value=2_500_000_000).report("Contract", dry_run=True)
-    assert "would translate 2 of 3" in text
-    assert "not reprocessed" in text
-    assert "$0.0007" in text and "2,500,000,000 EUR" in text
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("writes")
+async def test_the_client_waits_long_enough_for_a_round(monkeypatch):
+    seen = {}
+
+    def make_client(**kw):
+        seen.update(kw)
+        return FakeClient()
+
+    monkeypatch.setattr(backfill, "LinguisticsClient", make_client)
+    await run(FakeDriver([_contract("n", 9)]), "neo4j", label="Contract", limit=1,
+              budget_usd=1.0, apply_changes=True)
+    assert seen["timeout_s"] >= ROUND_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_sends_nothing_and_writes_nothing(monkeypatch, writes):
+    client = FakeClient()
+    progress = await _run([_contract("a", 9, "one"), _contract("b", 8, "two")], client,
+                          monkeypatch, apply_changes=False)
+    assert not client.calls and not writes and progress.spent_usd == 0
+    assert progress.translated == 2
+    assert progress.estimated_usd == pytest.approx(2 * SEED_COST_USD)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("writes")
+async def test_a_dry_run_says_where_the_budget_would_stop_it(monkeypatch):
+    rows = [_contract(str(i), 100 - i, f"title {i}") for i in range(5)]
+    progress = await _run(rows, FakeClient(), monkeypatch, apply_changes=False,
+                          budget_usd=2.5 * SEED_COST_USD)
+    assert progress.translated == 2 and progress.last_value == 99
+    assert "after 2 titles" in progress.stopped_because
+
+
+def test_the_dry_run_report_estimates_and_the_real_one_spends():
+    progress = Progress(considered=3, distinct_titles=2, translated=2, skipped_complete=1,
+                        spent_usd=0.0007, estimated_usd=0.0009, languages_written=46,
+                        last_value=2_500_000_000)
+    dry, real = progress.report("Contract", dry_run=True), progress.report("Contract", False)
+    assert "would translate 2 of 3" in dry and "not reprocessed" in dry
+    assert "$0.0009 (nothing sent)" in dry and "spent" not in dry
+    assert "spent             : $0.0007" in real and "2,500,000,000 EUR" in real
+
+
+def test_the_report_owns_up_to_spend_it_could_not_see():
+    text = Progress(spent_usd=0.001, unaccounted_usd=0.009).report("Contract", dry_run=False)
+    assert "up to $0.0090" in text
