@@ -10,6 +10,9 @@ from src.consolidator.rules.authority.embedding_similarity import (
     EmbeddingCosineSameAuthority,
 )
 from src.consolidator.rules.authority.enrichment import TranslationEnrichmentAuthority
+from src.consolidator.rules.cohesion.enrichment import (
+    TranslationEnrichmentCohesionProject,
+)
 from src.consolidator.rules.contract.enrichment import TranslationEnrichmentContract
 from src.consolidator.rules.company.exact_identifiers import (
     ExactCikMatch,
@@ -65,3 +68,4 @@ def load_all() -> None:
     register(GdsNodeSimilarityAuthority())
     # Contract — v1 multilingual: title-only translation.
     register(TranslationEnrichmentContract())
+    register(TranslationEnrichmentCohesionProject())

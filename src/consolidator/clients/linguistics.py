@@ -66,11 +66,50 @@ class LinguisticsClient:
         tgts = [l for l in (targets or EU_OFFICIAL_LANGS) if l != source_lang]
         if not tgts:
             return {}
+        translations, _cost = await self.translate_with_cost(text, source_lang, targets)
+        return translations
+
+    async def translate_with_cost(
+        self, text: str, source_lang: str, targets: list[str] | None = None,
+    ) -> tuple[dict[str, str], float]:
+        """As `translate`, plus what the provider charged for the call.
+
+        Zero for a cache hit and for the local backends. A caller running to
+        a budget accumulates this instead of estimating from token counts;
+        an older linguistics without the field reports 0.0, which reads as
+        "free" rather than crashing — the service-side cap still holds.
+        """
+        tgts = [l for l in (targets or EU_OFFICIAL_LANGS) if l != source_lang]
+        if not tgts:
+            return {}, 0.0
         resp = await self._post_json("/translate", {
             "text": text, "source_lang": source_lang,
             "targets": tgts, "backend": self.translation_backend,
         })
-        return dict(resp.get("translations", {}))
+        return dict(resp.get("translations", {})), float(resp.get("cost_usd") or 0.0)
+
+    async def translate_batch_with_cost(
+        self, items: list[tuple[str, str]], targets: list[str],
+    ) -> list[tuple[dict[str, str], float, str | None]]:
+        """Many texts, one request: ``[(translations, cost_usd, error), ...]``.
+
+        `items` are ``(text, source_lang)`` pairs sharing one target list, in
+        the order returned. The service runs them through a bounded window
+        and reports each item's own cost and failure, so a caller can bank
+        what succeeded and count what it was charged even when some items
+        come back empty.
+        """
+        if not items:
+            return []
+        resp = await self._post_json("/translate/batch", {
+            "items": [{"text": t, "source_lang": s} for t, s in items],
+            "targets": targets,
+            "backend": self.translation_backend,
+        })
+        return [
+            (dict(r.get("translations") or {}), float(r.get("cost_usd") or 0.0), r.get("error"))
+            for r in resp.get("results", [])
+        ]
 
     async def embed(self, text: str) -> tuple[list[float], str]:
         """Return (vector, encoder_id).
