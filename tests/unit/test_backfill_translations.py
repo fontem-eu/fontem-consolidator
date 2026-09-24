@@ -158,6 +158,13 @@ def test_the_source_language_is_only_asserted_when_the_country_says_so(country, 
     assert source_language({"country": country}, "Contract") == expected
 
 
+@pytest.mark.parametrize("country", ["LTU", "POL", "BEL", "NOR"])
+def test_a_cohesion_title_is_english_whatever_the_country(country):
+    """Kohesio publishes its titles in English; the country is not the language."""
+    assert source_language({"detail_country": country}, "CohesionProject") == "en"
+    assert "en" not in targets_for("en") and "lt" in targets_for("en")
+
+
 def test_an_unknown_source_asks_for_every_language():
     """With "und" the model returns the source's own entry unchanged, so no
     language can be skipped by a wrong guess — the Norwegian-without-English

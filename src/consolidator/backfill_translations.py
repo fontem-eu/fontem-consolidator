@@ -205,13 +205,22 @@ def already_translated(props: dict) -> bool:
     return any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS)
 
 
+#: Labels whose titles arrive in one language whatever the country. Kohesio
+#: publishes every project title in English, its own rendering of the
+#: beneficiary's original: a Lithuanian project's title is English, and
+#: reading it as Lithuanian both mislabels it and never asks for Lithuanian.
+FIXED_SOURCE_LANGUAGE: dict[str, str] = {"CohesionProject": "en"}
+
+
 def source_language(props: dict, label: str) -> str:
-    """The title's language when the country tells us, else "und".
+    """The title's language when the source or the country tells us, else "und".
 
     Guessing wrong is not neutral: a Norwegian title labelled English is
     translated from the wrong language, and English itself is never
     requested because the runner believes it already has it.
     """
+    if label in FIXED_SOURCE_LANGUAGE:
+        return FIXED_SOURCE_LANGUAGE[label]
     country = (props.get(COUNTRY_PROPERTY[label]) or "").upper()
     if country in UNRELIABLE_COUNTRIES or country not in COUNTRY_PRIMARY_LANG:
         return UNDETERMINED
