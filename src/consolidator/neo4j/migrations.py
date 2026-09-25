@@ -245,6 +245,15 @@ async def _ensure(driver: AsyncDriver, database: str, stmt: str) -> None:
             )
 
 
+# Backfill failures that mean "the graph was busy", not "the statement
+# is wrong": worth skipping and retrying on the next boot.
+_TRANSIENT_BACKFILL_ERRORS = frozenset({
+    "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+    "Neo.ClientError.Transaction.LockClientStopped",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+})
+
+
 async def apply(driver: AsyncDriver, database: str) -> None:
     async with driver.session(database=database) as session:
         await _drop_stale_vector_index(session)
@@ -257,10 +266,37 @@ async def apply(driver: AsyncDriver, database: str) -> None:
     # Backfill runs implicit-tx style (CALL { } IN TRANSACTIONS
     # requires it), so each statement uses its own session that
     # the driver auto-commits.
+    #
+    # A timeout here must NOT take the process down. Each statement is a
+    # full label scan whose cost grows with the graph, and it runs on
+    # every boot — so on a cold Neo4j (page cache empty after a cluster
+    # restart) it reliably exceeds the server's transaction timeout. On
+    # 2026-09-25 that put the prod sweeper in CrashLoopBackOff with 9
+    # restarts: it had already consolidated hundreds of entities each
+    # time before the backfill killed it.
+    #
+    # Skipping is safe. name_clean is best-effort here: the sink writes
+    # it on every :Company / :Authority upsert (apoc.text.clean in
+    # _merge_company_rows), so this only catches rows written before
+    # that existed. Missing it costs the exact-name rule a match on
+    # those rows — a degradation the next boot retries — where dying
+    # costs every rule on every entity.
+    completed = 0
     for stmt in BACKFILL_CYPHER:
-        async with driver.session(database=database) as session:
-            await session.run(stmt)
+        try:
+            async with driver.session(database=database) as session:
+                await session.run(stmt)
+            completed += 1
+        except ClientError as exc:
+            if exc.code not in _TRANSIENT_BACKFILL_ERRORS:
+                raise
+            logger.warning(
+                "consolidator: name_clean backfill statement timed out "
+                "({}); continuing without it — the sweep matters more "
+                "than the backfill",
+                exc.code,
+            )
     logger.info(
-        "consolidator: name_clean backfill complete ({} statements)",
-        len(BACKFILL_CYPHER),
+        "consolidator: name_clean backfill complete ({}/{} statements)",
+        completed, len(BACKFILL_CYPHER),
     )
