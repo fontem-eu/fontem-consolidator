@@ -154,54 +154,6 @@ INDEX_CYPHER = [
 ]
 
 
-# One-shot backfill for ``name_clean`` on existing rows. Runs in
-# small chunks to avoid a 3.3M-row tx that would blow the
-# transaction memory cap. The CALL { ... } IN TRANSACTIONS form
-# commits per chunk so a partial failure leaves the cluster in a
-# valid state and the next pod restart picks up where we left off.
-BACKFILL_CYPHER = [
-    """
-    MATCH (c:Company)
-    WHERE c.name IS NOT NULL AND c.name_clean IS NULL
-    CALL (c) {
-        SET c.name_clean = apoc.text.clean(c.name)
-    } IN TRANSACTIONS OF 5000 ROWS
-    """,
-    """
-    MATCH (a:Authority)
-    WHERE a.name IS NOT NULL AND a.name_clean IS NULL
-    CALL (a) {
-        SET a.name_clean = apoc.text.clean(a.name)
-    } IN TRANSACTIONS OF 5000 ROWS
-    """,
-    # Sweep up SAME_AS self-loops left behind by merges that ran before
-    # produceSelfRel:false was set on apoc.refactor.mergeNodes. Merging a
-    # duplicate into its canonical turned the SAME_AS edge BETWEEN the pair
-    # into a self-loop on the survivor, and 571 had accumulated by
-    # 2026-09-02 — the standing refs.sameas_no_selfloop block-tier failure.
-    #
-    # Safe to delete outright rather than review: the edge asserts a node is
-    # the same entity as itself, which is true but carries no information,
-    # and it corrupts every consumer that walks SAME_AS to build clusters.
-    # Nothing is lost — the merge it came from is already recorded as a
-    # :MergeEvent.
-    #
-    # Idempotent and cheap once drained: with the flag set, no new ones
-    # appear and this matches nothing on subsequent runs.
-    #
-    # Covers :SAME_AS_CANDIDATE too. A self-referential proposal is the
-    # same rule bug wearing the other relationship type, and after the
-    # proposal/assertion split almost everything is a proposal — sweeping
-    # only assertions would clean the half that barely fills up.
-    """
-    MATCH (a)-[r:SAME_AS|SAME_AS_CANDIDATE]->(a)
-    CALL (r) {
-        DELETE r
-    } IN TRANSACTIONS OF 1000 ROWS
-    """,
-]
-
-
 async def _drop_stale_vector_index(session) -> None:
     """CREATE VECTOR INDEX IF NOT EXISTS never updates an existing index,
     so a dims change (768 -> 1024 when the encoder moved from labse to
@@ -245,15 +197,6 @@ async def _ensure(driver: AsyncDriver, database: str, stmt: str) -> None:
             )
 
 
-# Backfill failures that mean "the graph was busy", not "the statement
-# is wrong": worth skipping and retrying on the next boot.
-_TRANSIENT_BACKFILL_ERRORS = frozenset({
-    "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
-    "Neo.ClientError.Transaction.LockClientStopped",
-    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
-})
-
-
 async def apply(driver: AsyncDriver, database: str) -> None:
     async with driver.session(database=database) as session:
         await _drop_stale_vector_index(session)
@@ -262,41 +205,4 @@ async def apply(driver: AsyncDriver, database: str) -> None:
     logger.info(
         "consolidator: neo4j indexes ensured ({} statements)",
         len(INDEX_CYPHER),
-    )
-    # Backfill runs implicit-tx style (CALL { } IN TRANSACTIONS
-    # requires it), so each statement uses its own session that
-    # the driver auto-commits.
-    #
-    # A timeout here must NOT take the process down. Each statement is a
-    # full label scan whose cost grows with the graph, and it runs on
-    # every boot — so on a cold Neo4j (page cache empty after a cluster
-    # restart) it reliably exceeds the server's transaction timeout. On
-    # 2026-09-25 that put the prod sweeper in CrashLoopBackOff with 9
-    # restarts: it had already consolidated hundreds of entities each
-    # time before the backfill killed it.
-    #
-    # Skipping is safe. name_clean is best-effort here: the sink writes
-    # it on every :Company / :Authority upsert (apoc.text.clean in
-    # _merge_company_rows), so this only catches rows written before
-    # that existed. Missing it costs the exact-name rule a match on
-    # those rows — a degradation the next boot retries — where dying
-    # costs every rule on every entity.
-    completed = 0
-    for stmt in BACKFILL_CYPHER:
-        try:
-            async with driver.session(database=database) as session:
-                await session.run(stmt)
-            completed += 1
-        except ClientError as exc:
-            if exc.code not in _TRANSIENT_BACKFILL_ERRORS:
-                raise
-            logger.warning(
-                "consolidator: name_clean backfill statement timed out "
-                "({}); continuing without it — the sweep matters more "
-                "than the backfill",
-                exc.code,
-            )
-    logger.info(
-        "consolidator: name_clean backfill complete ({}/{} statements)",
-        completed, len(BACKFILL_CYPHER),
     )

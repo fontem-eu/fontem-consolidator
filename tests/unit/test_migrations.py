@@ -1,53 +1,45 @@
-"""migrations.apply: index creation is fatal, the backfill is not."""
+"""migrations.apply: startup ensures indexes, and does nothing else.
+
+It used to run a name_clean backfill and a SAME_AS self-loop sweep on every
+boot: full label scans that grow with the graph. On a cold page cache they
+outlasted the server's transaction timeout (the prod sweeper crash-looped on
+2026-09-25) and then the API's liveness window (shared, 2026-09-26). Both
+root causes were fixed at the source, the sink writes name_clean on every
+upsert and no rule may propose a node as its own duplicate, and neither graph
+held a single row either sweep would touch. A statement that scans the graph
+belongs in a one-off job, not in the path a pod must finish before it serves.
+"""
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from neo4j.exceptions import ClientError, Neo4jError
 
 from src.consolidator.neo4j import migrations
 
 
-def _driver_raising(exc):
+def _recording_driver(ran: list[str]):
     session = AsyncMock()
-    session.run = AsyncMock(side_effect=exc)
+
+    async def run(stmt, **_params):
+        ran.append(stmt)
+
+    session.run = run
     driver = MagicMock()
     driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
     driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
     return driver
 
 
-def _error(code: str) -> Neo4jError:
-    # Same construction as test_migrations_race: ClientError.code is a
-    # read-only property, so the error has to be hydrated, not patched.
-    return Neo4jError._hydrate_neo4j(  # pylint: disable=protected-access
-        code=code, message="raised by the fake driver",
-    )
-
 @pytest.mark.asyncio
-async def test_a_backfill_timeout_does_not_kill_the_process():
-    """The prod sweeper crash-looped on 2026-09-25 (9 restarts): each
-    boot it consolidated hundreds of entities, then migrations.apply's
-    name_clean backfill — a full label scan, run every boot, against a
-    Neo4j whose page cache was cold after a cluster restart — blew the
-    server transaction timeout and took the process with it.
-
-    name_clean is best-effort here (the sink writes it on every upsert),
-    so a timeout must degrade, not kill."""
-    driver = _driver_raising(_error(
-        "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"))
-
-    with patch.object(migrations, "_ensure", AsyncMock()), \
-         patch.object(migrations, "_drop_stale_vector_index", AsyncMock()):
-        await migrations.apply(driver, "neo4j")   # must not raise
+async def test_startup_runs_index_statements_and_nothing_else():
+    ran: list[str] = []
+    with patch.object(migrations, "_drop_stale_vector_index", AsyncMock()):
+        await migrations.apply(_recording_driver(ran), "neo4j")
+    assert ran == list(migrations.INDEX_CYPHER)
 
 
-@pytest.mark.asyncio
-async def test_a_real_backfill_error_still_raises():
-    """Only 'the graph was busy' is skipped; a broken statement must
-    still be loud."""
-    driver = _driver_raising(_error("Neo.ClientError.Statement.SyntaxError"))
-
-    with patch.object(migrations, "_ensure", AsyncMock()), \
-         patch.object(migrations, "_drop_stale_vector_index", AsyncMock()), \
-         pytest.raises(ClientError):
-        await migrations.apply(driver, "neo4j")
+def test_no_startup_statement_scans_or_writes_data():
+    """Schema only: an index statement neither matches nor writes nodes."""
+    for stmt in migrations.INDEX_CYPHER:
+        assert stmt.lstrip().upper().startswith("CREATE"), stmt
+        for verb in ("MATCH", " SET ", "DELETE", "MERGE"):
+            assert verb not in stmt.upper(), stmt

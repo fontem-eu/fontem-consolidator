@@ -66,21 +66,12 @@ def test_the_consolidator_never_writes_a_same_as_edge_itself():
     assert not offenders, offenders
 
 
-def test_startup_does_not_delete_same_as_edges():
-    """The landmine. BACKFILL_CYPHER runs in full on EVERY startup, from
-    both the sweeper and the consolidator API, and it used to end by
-    deleting every :SAME_AS in the graph.
-
-    That was correct while Neo4j held no equivalences. Now the sink
-    writes them and the read path traverses them, so leaving it in would
-    wipe identity on the next pod restart — silently, with every company
-    and authority page quietly reverting to one record's contracts and
-    no error anywhere to explain it.
-    """
-    for stmt in migrations.BACKFILL_CYPHER:
-        if "DELETE r" not in stmt:
-            continue
-        # The self-loop sweep is still right, and names both types.
-        assert "SAME_AS_CANDIDATE" in stmt, (
-            f"a startup migration deletes :SAME_AS edges: {stmt.strip()}"
+def test_startup_deletes_nothing():
+    """The landmine. A startup migration used to end by deleting every
+    :SAME_AS in the graph: correct while Neo4j held no equivalences, a
+    silent wipe of identity once the sink wrote them. Startup now only
+    ensures indexes; nothing it runs may delete."""
+    for stmt in migrations.INDEX_CYPHER:
+        assert "DELETE" not in stmt.upper(), (
+            f"a startup migration deletes: {stmt.strip()}"
         )

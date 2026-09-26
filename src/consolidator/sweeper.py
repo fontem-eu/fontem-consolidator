@@ -524,10 +524,8 @@ async def run(config: SweeperConfig | None = None) -> None:
     # pod), so it ensures its own indexes — notably the
     # {company,authority}_last_consolidated range indexes the oldest-
     # first page depends on. All statements are IF NOT EXISTS /
-    # idempotent. The name_clean backfill inside is a full label scan
-    # per label; it is logged either side so a slow start is visible as
-    # a warm-up rather than as silence.
-    logger.info("sweeper: ensuring indexes and backfills")
+    # idempotent, and schema only: no data scan runs at startup.
+    logger.info("sweeper: ensuring indexes")
     await migrations.apply(driver, settings.neo4j_database)
     logger.info("sweeper: warm-up complete, starting sweep")
 

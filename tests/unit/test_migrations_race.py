@@ -58,8 +58,7 @@ def _company_cik() -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", sorted(migrations._CREATED_CONCURRENTLY))  # pylint: disable=protected-access
-async def test_an_index_created_concurrently_is_success(monkeypatch, code):
-    monkeypatch.setattr(migrations, "BACKFILL_CYPHER", [])
+async def test_an_index_created_concurrently_is_success(code):
     driver = _Driver({_company_cik(): _error(code)})
     await migrations.apply(driver, "neo4j")
     # Every statement after the one that lost the race still ran.
@@ -68,8 +67,7 @@ async def test_an_index_created_concurrently_is_success(monkeypatch, code):
 
 
 @pytest.mark.asyncio
-async def test_any_other_schema_error_still_fails_startup(monkeypatch):
-    monkeypatch.setattr(migrations, "BACKFILL_CYPHER", [])
+async def test_any_other_schema_error_still_fails_startup():
     driver = _Driver({_company_cik(): _error("Neo.ClientError.Statement.SyntaxError")})
     with pytest.raises(ClientError):
         await migrations.apply(driver, "neo4j")
