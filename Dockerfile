@@ -14,7 +14,7 @@ COPY vendor/gmr-events/        /tmp/gmr-events/
 RUN pip install --no-cache-dir /tmp/gmr-event-schemas /tmp/gmr-events
 
 # ── runtime: distroless; combined CA bundle so internal HTTPS is trusted ──────
-FROM cgr.void42.internal/chainguard/python:latest@sha256:992f13b3e2f7d7bef9b0d74caf7d05c12329482b7b1455fe0bfc6531361b9b7d
+FROM cgr.void42.internal/chainguard/python:latest@sha256:565af762d7f3efedc4e60d7ac7815e41588211d3f5757be33d8303e915ee6c72
 WORKDIR /app
 COPY --from=build /venv /venv
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
