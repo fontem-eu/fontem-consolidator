@@ -94,6 +94,7 @@ class Progress:  # pylint: disable=too-many-instance-attributes
     unaccounted_usd: float = 0.0
     estimated_usd: float = 0.0
     languages_written: int = 0
+    redone: int = 0
     stopped_because: str = "finished the selection"
     last_value: float | None = None
     failures: list[str] = field(default_factory=list)
@@ -107,6 +108,7 @@ class Progress:  # pylint: disable=too-many-instance-attributes
             f"  distinct titles   : {self.distinct_titles}",
             f"  languages written : {self.languages_written}",
             f"  already translated: {self.skipped_complete} (skipped, not reprocessed)",
+            f"  wrong source, redone: {self.redone}",
             f"  failed            : {self.failed}",
             money,
         ]
@@ -198,6 +200,9 @@ class WorkItem:
     targets: list[str]
     node_ids: list[str]
     value: float
+    #: title_<lang> keys a redo removes: the source language's, which the
+    #: wrong run wrote and a correct translation never targets.
+    clear: tuple[str, ...] = ()
 
 
 def already_translated(props: dict) -> bool:
@@ -205,17 +210,53 @@ def already_translated(props: dict) -> bool:
     return any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS)
 
 
-def source_language(props: dict, label: str) -> str:
-    """The title's language when the country tells us, else "und".
+#: Labels whose titles arrive in one language whatever the country. Kohesio
+#: publishes every project title in English, its own rendering of the
+#: beneficiary's original: a Lithuanian project's title is English, and
+#: reading it as Lithuanian both mislabels it and never asks for Lithuanian.
+FIXED_SOURCE_LANGUAGE: dict[str, str] = {"CohesionProject": "en"}
 
-    Guessing wrong is not neutral: a Norwegian title labelled English is
-    translated from the wrong language, and English itself is never
-    requested because the runner believes it already has it.
+
+#: Countries outside the EU map whose notices come in one known language. A
+#: fallback only: the notice's own title_lang comes first.
+EXTRA_COUNTRY_LANGUAGE: dict[str, str] = {"GBR": "en"}
+
+
+def source_language(props: dict, label: str) -> str:
+    """The title's language, from the best authority available, else "und".
+
+    In order: the source's fixed language (Kohesio); the notice's own
+    statement (``title_lang``, from the TED XML); the buyer's country; and
+    "und", which asks the model to identify it. Guessing wrong is not
+    neutral: a Norwegian title labelled English is translated from the wrong
+    language, and English itself is never requested.
     """
+    if label in FIXED_SOURCE_LANGUAGE:
+        return FIXED_SOURCE_LANGUAGE[label]
+    stated = (props.get("title_lang") or "").lower()
+    if stated:
+        # Outside the 24 (Norwegian, Icelandic) linguistics has no name for
+        # it to put in the prompt; the model identifies it instead.
+        return stated if stated in EU_OFFICIAL_LANGS else UNDETERMINED
     country = (props.get(COUNTRY_PROPERTY[label]) or "").upper()
+    if country in EXTRA_COUNTRY_LANGUAGE:
+        return EXTRA_COUNTRY_LANGUAGE[country]
     if country in UNRELIABLE_COUNTRIES or country not in COUNTRY_PRIMARY_LANG:
         return UNDETERMINED
     return source_lang_from_country(country)
+
+
+def translated_from_the_wrong_language(props: dict, label: str) -> bool:
+    """A title translated into its own language was translated from another.
+
+    Translation never targets its source, so a ``title_<source>`` on the node
+    means the run that wrote it assumed a different source: a country guess
+    the notice contradicts, Kohesio's English read as the country's language,
+    or the identify-it prompt that copied the title into every language.
+    Only decidable when the source is known.
+    """
+    src = source_language(props, label)
+    return src != UNDETERMINED and bool(props.get(f"title_{src}"))
 
 
 def targets_for(source_lang: str) -> list[str]:
@@ -226,28 +267,36 @@ def targets_for(source_lang: str) -> list[str]:
     return [code for code in EU_OFFICIAL_LANGS if code != source_lang]
 
 
-def plan(rows: list[dict], label: str) -> tuple[list[WorkItem], int]:
+def plan(
+    rows: list[dict], label: str, *, redo: bool = False,
+) -> tuple[list[WorkItem], int]:
     """Value-ordered, de-duplicated work, and how many nodes were skipped.
 
     Identical (title, language) pairs collapse into one item: framework
     agreements republish the same title, and translating it once is the same
-    translation at a fraction of the cost.
+    translation at a fraction of the cost. With ``redo``, a node translated
+    from the wrong language is work again, and its stale source-language
+    title is cleared when the new translations land.
     """
     by_key: dict[tuple[str, str], WorkItem] = {}
     skipped = 0
     for props in rows:
-        if already_translated(props):
+        wrong = redo and translated_from_the_wrong_language(props, label)
+        if already_translated(props) and not wrong:
             skipped += 1
             continue
         lang = source_language(props, label)
         key = (props["title"], lang)
         node_id = str(props.get(ID_PROPERTY[label]))
+        clear = (f"title_{lang}",) if wrong else ()
         if key in by_key:
             by_key[key].node_ids.append(node_id)
+            by_key[key].clear = tuple(sorted(set(by_key[key].clear) | set(clear)))
             continue
         by_key[key] = WorkItem(
             title=props["title"], source_lang=lang, targets=targets_for(lang),
             node_ids=[node_id], value=float(props.get(VALUE_PROPERTY[label]) or 0),
+            clear=clear,
         )
     return list(by_key.values()), skipped
 
@@ -319,6 +368,26 @@ async def bank(
             details={"field": "title", "translations": translations,
                      "source_lang": source},
         ))
+    stale = [k for k in item.clear if k[len("title_"):] not in translations]
+    if stale:
+        progress.redone += len(item.node_ids)
+        await clear_properties(dest, item.node_ids, stale)
+
+
+async def clear_properties(dest: Destination, node_ids: list[str], keys: list[str]) -> None:
+    """Remove stale ``title_<lang>`` properties a redo supersedes.
+
+    Keys are interpolated, so only ``title_`` plus one of the EU codes is
+    accepted; anything else is a bug upstream, not input to trust.
+    """
+    allowed = {f"title_{code}" for code in EU_OFFICIAL_LANGS}
+    if not set(keys) <= allowed:
+        raise ValueError(f"refusing to clear {sorted(set(keys) - allowed)}")
+    sets = ", ".join(f"n.{k} = null" for k in sorted(keys))
+    query = (f"MATCH (n:{dest.label}) WHERE n.{ID_PROPERTY[dest.label]} IN $ids "
+             f"SET {sets}")
+    async with dest.driver.session(database=dest.database) as session:
+        await session.run(query, ids=node_ids)
 
 
 def estimate(work: list[WorkItem], progress: "Progress", budget_usd: float) -> None:
@@ -379,11 +448,12 @@ async def run(  # pylint: disable=too-many-arguments
     budget_usd: float,
     apply_changes: bool,
     backend: str = "nebius",
+    redo: bool = False,
 ) -> Progress:
     """Select the richest `limit` nodes, skip the translated, translate the
     rest down the value order until the selection or the budget runs out."""
     rows = await select_by_value(driver, database, label, limit)
-    work, skipped = plan(rows, label)
+    work, skipped = plan(rows, label, redo=redo)
     progress = Progress(considered=len(rows), skipped_complete=skipped,
                         distinct_titles=len(work))
     if not apply_changes:
@@ -416,6 +486,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Translation backend the linguistics service should use.",
     )
     parser.add_argument(
+        "--redo-wrong-source", action="store_true",
+        help="Also re-translate titles that were translated from the wrong "
+             "language (they carry a title in their own language), clearing "
+             "that stale one. Off by default: translated titles are not "
+             "reprocessed.",
+    )
+    parser.add_argument(
         "--apply", action="store_true",
         help="Translate and write. Without it, nothing is sent to the provider "
              "and nothing is written: the selection is planned and priced at "
@@ -440,6 +517,7 @@ async def main_async(args: argparse.Namespace) -> int:
             driver, database,
             label=args.label, limit=limit, budget_usd=args.budget_usd,
             apply_changes=args.apply, backend=args.backend,
+            redo=args.redo_wrong_source,
         )
         print(progress.report(args.label, dry_run=not args.apply))
         return 0 if not progress.failures else 1

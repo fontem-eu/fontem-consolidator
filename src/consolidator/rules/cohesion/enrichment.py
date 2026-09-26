@@ -5,8 +5,10 @@ get `title_<lang>`. Cohesion projects are how EU funds are actually assigned —
 261,954 of them in prod, every one titled, none translated — and a Portuguese
 reader cannot currently tell what a Polish-titled project funded.
 
-Source language comes from `detail_country`, since Kohesio carries no title
-language of its own. Same v1 scope as contracts: title only. The description
+Source language is English: Kohesio publishes every title in English, its
+own rendering of the beneficiary's original, whatever the country.
+
+Same v1 scope as contracts: title only. The description
 (`detail_description`) is long-form and would multiply the token cost by an
 order of magnitude for text nobody browses.
 """
@@ -22,20 +24,15 @@ from src.consolidator.clients.linguistics import (
     LinguisticsUnavailable,
 )
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
-from src.consolidator.rules.multilingual_shared import source_lang_from_country
 
 
-def infer_source_lang(entity: Entity) -> str:
-    """Best-effort source language for a project title.
+def infer_source_lang(_entity: Entity) -> str:
+    """Kohesio titles are English whatever the project's country.
 
-    Kohesio has no title-language field, so the beneficiary country is the
-    signal. Falls through to "en" for unknowns, which is what the shared
-    helper does.
+    Reading the country instead labelled a Lithuanian project's English
+    title as Lithuanian and never requested Lithuanian (2026-09-24).
     """
-    explicit = (entity.properties.get("title_lang") or "").lower()
-    if explicit:
-        return explicit
-    return source_lang_from_country(entity.properties.get("detail_country"))
+    return "en"
 
 
 def missing_targets(entity: Entity) -> list[str]:
