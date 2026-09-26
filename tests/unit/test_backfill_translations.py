@@ -25,6 +25,7 @@ from src.consolidator.backfill_translations import (
     run,
     source_language,
     targets_for,
+    translated_from_the_wrong_language,
 )
 from src.consolidator.clients.linguistics import (
     EU_OFFICIAL_LANGS,
@@ -376,3 +377,60 @@ def test_the_dry_run_report_estimates_and_the_real_one_spends():
 def test_the_report_owns_up_to_spend_it_could_not_see():
     text = Progress(spent_usd=0.001, unaccounted_usd=0.009).report("Contract", dry_run=False)
     assert "up to $0.0090" in text
+
+
+# ── source-language authority, and redoing wrong-source translations ──
+
+
+@pytest.mark.parametrize("props, label, expected", [
+    ({"country": "FRA", "title_lang": "en"}, "Contract", "en"),   # notice beats country
+    ({"country": "NOR", "title_lang": "no"}, "Contract", UNDETERMINED),  # outside the 24
+    ({"country": "GBR"}, "Contract", "en"),                       # extra country map
+    ({"country": "FRA"}, "Contract", "fr"),                       # country fallback
+    ({"detail_country": "LTU", "title_lang": "lt"}, "CohesionProject", "en"),  # fixed wins
+])
+def test_the_source_language_comes_from_the_best_authority(props, label, expected):
+    assert source_language(props, label) == expected
+
+
+def test_a_title_in_its_own_language_was_translated_from_another():
+    assert translated_from_the_wrong_language(
+        {"country": "FRA", "title_lang": "en", "title_en": "copy"}, "Contract")
+    assert not translated_from_the_wrong_language(
+        {"country": "FRA", "title_lang": "fr", "title_en": "Works"}, "Contract")
+    assert translated_from_the_wrong_language(
+        {"detail_country": "LTU", "title_en": "copy"}, "CohesionProject")
+    # unknown source: undecidable, never redone
+    assert not translated_from_the_wrong_language(
+        {"country": "CHE", "title_de": "x"}, "Contract")
+
+
+def test_a_wrong_source_translation_is_left_alone_unless_redo_is_asked():
+    rows = [_contract("n", 9, "Marché de travaux", "FRA",
+                      title_lang="en", title_en="Marché de travaux", title_de="x")]
+    work, skipped = plan(rows, "Contract")
+    assert not work and skipped == 1
+    work, skipped = plan(rows, "Contract", redo=True)
+    assert skipped == 0 and work[0].source_lang == "en" and work[0].clear == ("title_en",)
+
+
+@pytest.mark.asyncio
+async def test_a_redo_writes_the_new_translations_and_clears_the_stale_one(monkeypatch, writes):
+    cleared = []
+
+    async def fake_clear(_dest, node_ids, keys):
+        cleared.append((list(node_ids), list(keys)))
+
+    monkeypatch.setattr(backfill, "clear_properties", fake_clear)
+    rows = [_contract("n", 9, "Construction works", "BEL",
+                      title_lang="en", title_en="Construction works")]
+    progress = await _run(rows, FakeClient(), monkeypatch, redo=True)
+    assert "en" not in writes[0].details["translations"]
+    assert cleared == [(["n"], ["title_en"])] and progress.redone == 1
+
+
+@pytest.mark.asyncio
+async def test_only_eu_title_keys_can_be_cleared():
+    with pytest.raises(ValueError):
+        await backfill.clear_properties(
+            backfill.Destination(None, "neo4j", "Contract", True), ["n"], ["title_x; DETACH"])
