@@ -21,10 +21,12 @@ from src.consolidator.rules.multilingual_shared import source_lang_from_country
 
 
 def infer_source_lang(entity: Entity) -> str:
-    """Best-effort source language for a contract's title.
+    """Source language for a contract's title.
 
-    TED doesn't carry a title_lang property today, so we infer from the
-    buyer's country code. Falls through to "en" for unknowns.
+    The loader writes title_lang from the notice itself (the title's own
+    languageID on eForms, the original form's LG on legacy TED). Only a
+    contract loaded before that still falls back to the buyer's country,
+    and "en" for unknowns.
     """
     explicit = (entity.properties.get("title_lang") or "").lower()
     if explicit:
@@ -124,6 +126,8 @@ class TranslationEnrichmentContract(Rule):
             details={
                 "field": "title",
                 "translations": translations,
-                "source_lang": src_lang,
+                # title_lang belongs to the loader. Writing the language this
+                # rule assumed would turn a country guess into a statement.
+                "source_lang": None,
             },
         )

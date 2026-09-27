@@ -141,7 +141,8 @@ async def test_resolve_happy_writes_translations_no_embedding(monkeypatch):
     assert decision.entity_type == "Contract"
     assert decision.details["field"] == "title"
     assert decision.details["translations"]["en"] == "[en]X"
-    assert decision.details["source_lang"] == "de"
+    # The rule translated from "de" but claims no title_lang: the loader owns it.
+    assert decision.details["source_lang"] is None
     # Contract rule intentionally doesn't compute embeddings (v1 scope).
     assert "embedding" not in decision.details
 
