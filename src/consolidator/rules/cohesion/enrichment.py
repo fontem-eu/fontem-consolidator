@@ -26,13 +26,22 @@ from src.consolidator.clients.linguistics import (
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 
-def infer_source_lang(_entity: Entity) -> str:
-    """Kohesio titles are English whatever the project's country.
+#: BCP-47 "undetermined": linguistics asks the model to identify it.
+UNDETERMINED = "und"
 
-    Reading the country instead labelled a Lithuanian project's English
-    title as Lithuanian and never requested Lithuanian (2026-09-24).
+
+def infer_source_lang(entity: Entity) -> str:
+    """The title's language as Kohesio states it, else "und".
+
+    The loader records title_lang="en" when the title came from Kohesio's
+    English-name column, and nothing when it came from the programme-
+    language fallback, whose language the source does not state. Neither
+    the country nor a blanket "English" is a statement: the country labelled
+    a Lithuanian project's English title as Lithuanian (2026-09-24), and
+    assuming English would mislabel every fallback title.
     """
-    return "en"
+    stated = (entity.properties.get("title_lang") or "").lower()
+    return stated if stated in EU_OFFICIAL_LANGS else UNDETERMINED
 
 
 def missing_targets(entity: Entity) -> list[str]:
@@ -113,7 +122,10 @@ class TranslationEnrichmentCohesionProject(Rule):
             details={
                 "field": "title",
                 "translations": translations,
-                "source_lang": src_lang,
+                # title_lang belongs to the loader, which states it from the
+                # source. A translator writing its assumption there would
+                # turn a guess into a statement for the next reader.
+                "source_lang": None,
             },
         )
 

@@ -210,11 +210,10 @@ def already_translated(props: dict) -> bool:
     return any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS)
 
 
-#: Labels whose titles arrive in one language whatever the country. Kohesio
-#: publishes every project title in English, its own rendering of the
-#: beneficiary's original: a Lithuanian project's title is English, and
-#: reading it as Lithuanian both mislabels it and never asks for Lithuanian.
-FIXED_SOURCE_LANGUAGE: dict[str, str] = {"CohesionProject": "en"}
+#: Labels whose country says nothing about the title's language. Kohesio's
+#: titles are mostly its English rendering of the original, so the country's
+#: language would be wrong; the loader states "en" when that is what it has.
+NO_COUNTRY_FALLBACK = frozenset({"CohesionProject"})
 
 
 #: Countries outside the EU map whose notices come in one known language. A
@@ -225,19 +224,19 @@ EXTRA_COUNTRY_LANGUAGE: dict[str, str] = {"GBR": "en"}
 def source_language(props: dict, label: str) -> str:
     """The title's language, from the best authority available, else "und".
 
-    In order: the source's fixed language (Kohesio); the notice's own
-    statement (``title_lang``, from the TED XML); the buyer's country; and
-    "und", which asks the model to identify it. Guessing wrong is not
+    In order: the source's own statement (``title_lang``: the TED notice's
+    language, Kohesio's English-name column); the buyer's country, where it
+    says anything; and "und", which asks the model to identify it. Guessing wrong is not
     neutral: a Norwegian title labelled English is translated from the wrong
     language, and English itself is never requested.
     """
-    if label in FIXED_SOURCE_LANGUAGE:
-        return FIXED_SOURCE_LANGUAGE[label]
     stated = (props.get("title_lang") or "").lower()
     if stated:
         # Outside the 24 (Norwegian, Icelandic) linguistics has no name for
         # it to put in the prompt; the model identifies it instead.
         return stated if stated in EU_OFFICIAL_LANGS else UNDETERMINED
+    if label in NO_COUNTRY_FALLBACK:
+        return UNDETERMINED
     country = (props.get(COUNTRY_PROPERTY[label]) or "").upper()
     if country in EXTRA_COUNTRY_LANGUAGE:
         return EXTRA_COUNTRY_LANGUAGE[country]
@@ -358,15 +357,16 @@ async def bank(
     progress.languages_written += len(translations) * len(item.node_ids)
     if not dest.apply_changes:
         return
-    # "und" means we do not know the title's language, so we do not claim one.
-    source = None if item.source_lang == UNDETERMINED else item.source_lang
+    # title_lang belongs to the loader, which states it from the source. The
+    # runner writes translations only: writing the language it assumed would
+    # turn a country guess into a statement the next run believes.
     for node_id in item.node_ids:
         await _enrich(dest.driver, dest.database, decision=Decision(
             rule_name="backfill_translations", action="enrich",
             source_id=node_id, target_id=node_id, confidence=1.0,
             entity_type=dest.label,
             details={"field": "title", "translations": translations,
-                     "source_lang": source},
+                     "source_lang": None},
         ))
     stale = [k for k in item.clear if k[len("title_"):] not in translations]
     if stale:
@@ -400,6 +400,7 @@ def estimate(work: list[WorkItem], progress: "Progress", budget_usd: float) -> N
     progress.translated = sum(len(i.node_ids) for i in affordable)
     progress.languages_written = sum(len(i.targets) * len(i.node_ids) for i in affordable)
     progress.estimated_usd = len(affordable) * SEED_COST_USD
+    progress.redone = sum(len(i.node_ids) for i in affordable if i.clear)
     if affordable:
         progress.last_value = affordable[-1].value
     progress.stopped_because = (
