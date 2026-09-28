@@ -11,7 +11,27 @@ Order of work
 :Contract by ``value_eur`` descending, :CohesionProject by
 ``detail_eu_contribution`` descending. A EUR 2.5bn framework agreement read by
 someone in another member state is the case this exists for; a EUR 900 office
-supply order is not.
+supply order is not. Only canonically keyed contracts: one keyed by its legacy
+OJ S reference is the duplicate of one keyed by its publication number
+(gitops data-backlog Part 6), queued to be merged into it, and often carries a
+value the quarantine has since withheld from its twin.
+
+Which language
+--------------
+The notice's own statement (``title_lang``), else a language detected earlier
+(``title_lang_detected``), else one detected now: linguistics asks the model,
+and the answer is kept on the node with the model that gave it, so it is paid
+for once. A title with no words to judge by is not translated; one the model
+gave no answer for waits for the next run. Nothing is guessed from the
+buyer's country, and nothing is written to ``title_lang``, which belongs to
+the loader.
+
+Never twice
+-----------
+A contract, not a notice, is what gets translated: a modification is another
+notice of the same contract. Identical titles are translated once and written
+to every node that carries them. A translated node is not reprocessed unless
+its title has changed since (``title_translated_from``).
 
 The budget is real
 ------------------
@@ -49,10 +69,6 @@ from src.consolidator.clients.linguistics import (
     LinguisticsUnavailable,
 )
 from src.consolidator.rules.base import Decision
-from src.consolidator.rules.multilingual_shared import (
-    COUNTRY_PRIMARY_LANG,
-    source_lang_from_country,
-)
 
 #: What one title into 23 languages costs, measured 2026-09-23 on
 #: google/gemma-3-27b-it (138 prompt + 830 completion tokens at
@@ -66,9 +82,12 @@ VALUE_PROPERTY: dict[str, str] = {
     "Contract": "value_eur",
     "CohesionProject": "detail_eu_contribution",
 }
-COUNTRY_PROPERTY: dict[str, str] = {
-    "Contract": "country",
-    "CohesionProject": "detail_country",
+#: Which nodes of each label are the canonical record. A contract keyed by
+#: its legacy OJ S reference ("2021/S 129-344226") has, or will have, a twin
+#: keyed by its publication number ("344226-2021"), which is the one kept.
+CANONICAL_FILTER: dict[str, str] = {
+    "Contract": "AND NOT n.ted_notice_id =~ '^[0-9]{4}/S .*'",
+    "CohesionProject": "",
 }
 ID_PROPERTY: dict[str, str] = {
     "Contract": "ted_notice_id",
@@ -95,6 +114,12 @@ class Progress:  # pylint: disable=too-many-instance-attributes
     estimated_usd: float = 0.0
     languages_written: int = 0
     redone: int = 0
+    detected: int = 0
+    to_detect: int = 0
+    undetected: int = 0
+    no_words: int = 0
+    retitled: int = 0
+    detect_usd: float = 0.0
     stopped_because: str = "finished the selection"
     last_value: float | None = None
     failures: list[str] = field(default_factory=list)
@@ -109,9 +134,17 @@ class Progress:  # pylint: disable=too-many-instance-attributes
             f"  languages written : {self.languages_written}",
             f"  already translated: {self.skipped_complete} (skipped, not reprocessed)",
             f"  wrong source, redone: {self.redone}",
+            f"  title changed, redone: {self.retitled}",
+            f"  language detected : {self.detected}"
+            + (f" (${self.detect_usd:.4f})" if self.detect_usd else ""),
+            f"  no words to translate: {self.no_words}",
             f"  failed            : {self.failed}",
             money,
         ]
+        if dry_run and self.to_detect:
+            lines.insert(-1, f"  would detect      : {self.to_detect} (no stated language)")
+        if self.undetected:
+            lines.insert(-1, f"  language unknown  : {self.undetected} (left for the next run)")
         if self.unaccounted_usd:
             lines.append(f"  unaccounted       : up to ${self.unaccounted_usd:.4f}"
                          " (a round was cut off after it was sent)")
@@ -137,7 +170,7 @@ async def select_by_value(
     value_prop = VALUE_PROPERTY[label]
     query = (
         f"MATCH (n:{label}) "
-        f"WHERE n.title IS NOT NULL AND n.{value_prop} IS NOT NULL "
+        f"WHERE n.title IS NOT NULL AND n.{value_prop} IS NOT NULL {CANONICAL_FILTER[label]} "
         f"RETURN properties(n) AS props ORDER BY n.{value_prop} DESC LIMIT $limit"
     )
     async with driver.session(database=database) as session:
@@ -146,11 +179,11 @@ async def select_by_value(
 
 
 async def count_candidates(driver: AsyncDriver, database: str, label: str) -> int:
-    """Titled nodes with a value — the population the percentage is of."""
+    """Titled canonical nodes with a value — the population the percentage is of."""
     value_prop = VALUE_PROPERTY[label]
     query = (
         f"MATCH (n:{label}) "
-        f"WHERE n.title IS NOT NULL AND n.{value_prop} IS NOT NULL "
+        f"WHERE n.title IS NOT NULL AND n.{value_prop} IS NOT NULL {CANONICAL_FILTER[label]} "
         "RETURN count(n) AS n"
     )
     async with driver.session(database=database) as session:
@@ -162,13 +195,6 @@ async def count_candidates(driver: AsyncDriver, database: str, label: str) -> in
 #: BCP-47 "undetermined": linguistics asks the model to identify the
 #: language rather than being told one.
 UNDETERMINED = "und"
-
-#: Countries whose notices are not reliably in the language the country map
-#: gives. Belgium publishes in French and Dutch; Luxembourg in French, German
-#: and English; most Maltese TED notices are in English; Finland publishes in
-#: Swedish too. For these, and for any country the map does not know (Norway,
-#: Switzerland, the candidate countries), the model identifies the language.
-UNRELIABLE_COUNTRIES = frozenset({"BEL", "LUX", "MLT", "FIN"})
 
 #: Distinct titles per round. Small enough to keep the order close to strict
 #: value order under a budget cut-off, large enough to be worth a batch call.
@@ -206,46 +232,48 @@ class WorkItem:
 
 
 def already_translated(props: dict) -> bool:
-    """Any translated title at all. The owner's rule is not to reprocess."""
-    return any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS)
+    """Translated, and from the title it carries now. The owner's rule is not
+    to reprocess, so one existing language counts; a node translated before
+    the source title was recorded is taken to be current."""
+    if not any(props.get(f"title_{code}") for code in EU_OFFICIAL_LANGS):
+        return False
+    return not title_changed(props)
 
 
-#: Labels whose country says nothing about the title's language. Kohesio's
-#: titles are mostly its English rendering of the original, so the country's
-#: language would be wrong; the loader states "en" when that is what it has.
-NO_COUNTRY_FALLBACK = frozenset({"CohesionProject"})
+def title_changed(props: dict) -> bool:
+    """The title differs from the one its translations were made from."""
+    source = props.get("title_translated_from")
+    return source is not None and source != props.get("title")
 
 
-#: Countries outside the EU map whose notices come in one known language. A
-#: fallback only: the notice's own title_lang comes first.
-EXTRA_COUNTRY_LANGUAGE: dict[str, str] = {"GBR": "en"}
+#: What detection answers for a title with no words to judge by: a
+#: reference number, a code, a bare name. Nothing to translate.
+NO_WORDS = UNDETERMINED
 
 
-def source_language(props: dict, label: str) -> str:
-    """The title's language, from the best authority available, else "und".
+def source_language(props: dict) -> str | None:
+    """The title's language, from the best authority available.
 
-    In order: the source's own statement (``title_lang``: the TED notice's
-    language, Kohesio's English-name column); the buyer's country, where it
-    says anything; and "und", which asks the model to identify it. Guessing wrong is not
-    neutral: a Norwegian title labelled English is translated from the wrong
-    language, and English itself is never requested.
+    The source's own statement (``title_lang``: the TED notice's language,
+    Kohesio's English-name column), else a language detected from the title
+    and kept on the node (``title_lang_detected``). None when neither is
+    known: detect it before translating. A language outside the 24 has no
+    name linguistics can put in a prompt, so the model identifies it ("und").
     """
-    stated = (props.get("title_lang") or "").lower()
-    if stated:
-        # Outside the 24 (Norwegian, Icelandic) linguistics has no name for
-        # it to put in the prompt; the model identifies it instead.
-        return stated if stated in EU_OFFICIAL_LANGS else UNDETERMINED
-    if label in NO_COUNTRY_FALLBACK:
-        return UNDETERMINED
-    country = (props.get(COUNTRY_PROPERTY[label]) or "").upper()
-    if country in EXTRA_COUNTRY_LANGUAGE:
-        return EXTRA_COUNTRY_LANGUAGE[country]
-    if country in UNRELIABLE_COUNTRIES or country not in COUNTRY_PRIMARY_LANG:
-        return UNDETERMINED
-    return source_lang_from_country(country)
+    for key in ("title_lang", "title_lang_detected"):
+        code = (props.get(key) or "").lower()
+        if code:
+            return code if code in EU_OFFICIAL_LANGS else UNDETERMINED
+    return None
 
 
-def translated_from_the_wrong_language(props: dict, label: str) -> bool:
+def has_no_words(props: dict) -> bool:
+    """Detection found nothing to translate, and no source says otherwise."""
+    return (not props.get("title_lang")
+            and (props.get("title_lang_detected") or "").lower() == NO_WORDS)
+
+
+def translated_from_the_wrong_language(props: dict) -> bool:
     """A title translated into its own language was translated from another.
 
     Translation never targets its source, so a ``title_<source>`` on the node
@@ -254,8 +282,8 @@ def translated_from_the_wrong_language(props: dict, label: str) -> bool:
     or the identify-it prompt that copied the title into every language.
     Only decidable when the source is known.
     """
-    src = source_language(props, label)
-    return src != UNDETERMINED and bool(props.get(f"title_{src}"))
+    src = source_language(props)
+    return src not in (None, UNDETERMINED) and bool(props.get(f"title_{src}"))
 
 
 def targets_for(source_lang: str) -> list[str]:
@@ -266,6 +294,13 @@ def targets_for(source_lang: str) -> list[str]:
     return [code for code in EU_OFFICIAL_LANGS if code != source_lang]
 
 
+def needs_translation(props: dict, redo: bool) -> tuple[bool, bool]:
+    """``(translate it, redo it)``: work that is new, retitled, or (with
+    ``redo``) translated from the wrong language."""
+    wrong = redo and translated_from_the_wrong_language(props)
+    return (wrong or not already_translated(props)), wrong
+
+
 def plan(
     rows: list[dict], label: str, *, redo: bool = False,
 ) -> tuple[list[WorkItem], int]:
@@ -273,21 +308,24 @@ def plan(
 
     Identical (title, language) pairs collapse into one item: framework
     agreements republish the same title, and translating it once is the same
-    translation at a fraction of the cost. With ``redo``, a node translated
-    from the wrong language is work again, and its stale source-language
-    title is cleared when the new translations land.
+    translation at a fraction of the cost. A node redone because it was
+    translated from the wrong language, or because its title changed, has its
+    stale source-language title cleared when the new translations land.
+    Nodes whose language is still unknown are not planned; ``run`` detects
+    it first.
     """
     by_key: dict[tuple[str, str], WorkItem] = {}
     skipped = 0
     for props in rows:
-        wrong = redo and translated_from_the_wrong_language(props, label)
-        if already_translated(props) and not wrong:
-            skipped += 1
+        todo, wrong = needs_translation(props, redo)
+        lang = source_language(props)
+        if not todo or lang is None or has_no_words(props):
+            skipped += not todo
             continue
-        lang = source_language(props, label)
         key = (props["title"], lang)
         node_id = str(props.get(ID_PROPERTY[label]))
-        clear = (f"title_{lang}",) if wrong else ()
+        stale = (wrong or title_changed(props)) and props.get(f"title_{lang}")
+        clear = (f"title_{lang}",) if stale else ()
         if key in by_key:
             by_key[key].node_ids.append(node_id)
             by_key[key].clear = tuple(sorted(set(by_key[key].clear) | set(clear)))
@@ -298,6 +336,26 @@ def plan(
             clear=clear,
         )
     return list(by_key.values()), skipped
+
+
+def tally_unplanned(rows: list[dict], progress: "Progress", *, redo: bool) -> None:
+    """Count the nodes plan() left out for want of a language, by reason."""
+    for props in rows:
+        todo = needs_translation(props, redo)[0]
+        if todo and has_no_words(props):
+            progress.no_words += 1
+        elif needs_detection(props, redo):
+            progress.undetected += 1
+        elif todo and title_changed(props):
+            progress.retitled += 1
+
+
+def needs_detection(props: dict, redo: bool) -> bool:
+    """No known language, and one is needed: to translate the title, or,
+    in a redo, to tell whether its translations came from the wrong one."""
+    if source_language(props) is not None or has_no_words(props):
+        return False
+    return redo or needs_translation(props, redo)[0]
 
 
 def items_that_fit(progress: "Progress", wanted: int, budget_usd: float) -> int:
@@ -368,10 +426,81 @@ async def bank(
             details={"field": "title", "translations": translations,
                      "source_lang": None},
         ))
+    await set_translated_from(dest, item.node_ids, item.title)
     stale = [k for k in item.clear if k[len("title_"):] not in translations]
     if stale:
         progress.redone += len(item.node_ids)
         await clear_properties(dest, item.node_ids, stale)
+
+
+async def set_translated_from(dest: Destination, node_ids: list[str], title: str) -> None:
+    """Record the title the translations were made from, so a later change
+    to it is seen as one rather than left under stale translations."""
+    query = (f"MATCH (n:{dest.label}) WHERE n.{ID_PROPERTY[dest.label]} IN $ids "
+             "SET n.title_translated_from = $title")
+    async with dest.driver.session(database=dest.database) as session:
+        await session.run(query, ids=node_ids, title=title)
+
+
+#: Texts per /detect request, the service's limit.
+DETECT_REQUEST_SIZE = 256
+
+
+async def detect_languages(
+    client: LinguisticsClient, dest: Destination, rows: list[dict],
+    progress: "Progress", *, redo: bool,
+) -> None:
+    """Detect the language of every title that needs one, keep it on its
+    nodes, and note it on the rows for plan().
+
+    Each distinct title is asked once. "und" (no words) is kept too, so the
+    next run does not pay to ask again; a title the model did not answer is
+    left unknown and asked next time.
+    """
+    wanted: dict[str, list[dict]] = {}
+    for props in rows:
+        if needs_detection(props, redo):
+            wanted.setdefault(props["title"], []).append(props)
+    titles = list(wanted)
+    for start in range(0, len(titles), DETECT_REQUEST_SIZE):
+        chunk = titles[start:start + DETECT_REQUEST_SIZE]
+        langs, model, cost = await client.detect(chunk)
+        progress.spent_usd += cost
+        progress.detect_usd += cost
+        found = _note_detected(dict(zip(chunk, langs)), wanted, ID_PROPERTY[dest.label])
+        progress.detected += len(found)
+        await persist_detected(dest, found, model or "unknown")
+
+
+def _note_detected(
+    answers: dict[str, str | None], wanted: dict[str, list[dict]], id_prop: str,
+) -> list[dict]:
+    """Put each answered language on the rows carrying that title; return
+    the ``{id, lang}`` rows to keep on the graph."""
+    found = []
+    for title, lang in answers.items():
+        if not lang:
+            continue
+        for props in wanted[title]:
+            props["title_lang_detected"] = lang
+            found.append({"id": str(props.get(id_prop)), "lang": lang})
+    return found
+
+
+async def persist_detected(dest: Destination, found: list[dict], model: str) -> None:
+    """Keep each detected language on its node, with where it came from.
+
+    Beside ``title_lang``, never in it: the loader states that one from the
+    source, and a detection written there would read as a statement.
+    """
+    if not found or not dest.apply_changes:
+        return
+    query = (f"UNWIND $rows AS row MATCH (n:{dest.label} "
+             f"{{{ID_PROPERTY[dest.label]}: row.id}}) "
+             "SET n.title_lang_detected = row.lang, n.title_lang_detected_by = $model, "
+             "n.title_lang_detected_at = datetime()")
+    async with dest.driver.session(database=dest.database) as session:
+        await session.run(query, rows=found, model=model)
 
 
 async def clear_properties(dest: Destination, node_ids: list[str], keys: list[str]) -> None:
@@ -397,6 +526,8 @@ def estimate(work: list[WorkItem], progress: "Progress", budget_usd: float) -> N
     whose results were thrown away.
     """
     affordable = work[:int(budget_usd // SEED_COST_USD)]
+    progress.to_detect = progress.undetected
+    progress.undetected = 0
     progress.translated = sum(len(i.node_ids) for i in affordable)
     progress.languages_written = sum(len(i.targets) * len(i.node_ids) for i in affordable)
     progress.estimated_usd = len(affordable) * SEED_COST_USD
@@ -451,13 +582,20 @@ async def run(  # pylint: disable=too-many-arguments
     backend: str = "nebius",
     redo: bool = False,
 ) -> Progress:
-    """Select the richest `limit` nodes, skip the translated, translate the
-    rest down the value order until the selection or the budget runs out."""
+    """Select the richest `limit` nodes, skip the translated, detect the
+    languages nobody stated, then translate down the value order until the
+    selection or the budget runs out."""
     rows = await select_by_value(driver, database, label, limit)
-    work, skipped = plan(rows, label, redo=redo)
-    progress = Progress(considered=len(rows), skipped_complete=skipped,
-                        distinct_titles=len(work))
+    dest = Destination(driver, database, label, apply_changes)
+    progress = Progress(considered=len(rows))
     if not apply_changes:
+        # A dry run sends nothing, detection included: the titles without a
+        # language are priced as translations and counted as to be detected.
+        work, progress.skipped_complete = plan(
+            [p if source_language(p) or has_no_words(p) else {**p, "title_lang": "und"}
+             for p in rows], label, redo=redo)
+        tally_unplanned(rows, progress, redo=redo)
+        progress.distinct_titles = len(work)
         estimate(work, progress, budget_usd)
         return progress
     async with LinguisticsClient(
@@ -466,8 +604,16 @@ async def run(  # pylint: disable=too-many-arguments
         translation_backend=backend,
         embedding_backend=settings.linguistics_embedding_backend,
     ) as client:
-        await work_down(client, work, progress,
-                        Destination(driver, database, label, apply_changes), budget_usd)
+        try:
+            await detect_languages(client, dest, rows, progress, redo=redo)
+        except (LinguisticsUnavailable, LinguisticsError) as exc:
+            progress.stopped_because = f"language detection failed: {exc}"
+            progress.failures.append(f"detect: {exc}")
+            return progress
+        work, progress.skipped_complete = plan(rows, label, redo=redo)
+        tally_unplanned(rows, progress, redo=redo)
+        progress.distinct_titles = len(work)
+        await work_down(client, work, progress, dest, budget_usd)
     return progress
 
 

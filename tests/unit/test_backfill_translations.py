@@ -13,7 +13,7 @@ import pytest
 
 import src.consolidator.backfill_translations as backfill
 from src.consolidator.backfill_translations import (
-    COUNTRY_PROPERTY,
+    CANONICAL_FILTER,
     ID_PROPERTY,
     ROUND_TIMEOUT_S,
     SEED_COST_USD,
@@ -21,6 +21,7 @@ from src.consolidator.backfill_translations import (
     VALUE_PROPERTY,
     Progress,
     already_translated,
+    has_no_words,
     plan,
     run,
     source_language,
@@ -41,6 +42,17 @@ class FakeClient:
     raises: Exception | None = None
     fail_titles: set[str] = field(default_factory=set)
     calls: list[tuple[list[tuple[str, str]], list[str]]] = field(default_factory=list)
+    #: /detect: title -> what the model answers (default "pl"; None = no answer).
+    detections: dict[str, str | None] = field(default_factory=dict)
+    detect_raises: Exception | None = None
+    detect_calls: list[list[str]] = field(default_factory=list)
+
+    async def detect(self, texts):
+        if self.detect_raises:
+            raise self.detect_raises
+        self.detect_calls.append(list(texts))
+        return ([self.detections.get(t, "pl") for t in texts],
+                "nebius:google/gemma-3-27b-it", 0.00001 * len(texts))
 
     async def translate_batch_with_cost(self, items, targets):
         if self.raises:
@@ -70,6 +82,8 @@ class FakeDriver:
     """Serves rows in the order the query asked for."""
 
     rows: list[dict]
+    queries: list[str] = field(default_factory=list)
+    writes: list[tuple[str, dict]] = field(default_factory=list)
 
     def session(self, database=None):
         """The real driver takes a database; this fake holds one graph."""
@@ -88,6 +102,10 @@ class _FakeSession:
         return False
 
     async def run(self, query, **params):
+        self.driver.queries.append(query)
+        if " SET " in query:
+            self.driver.writes.append((query, params))
+            return _FakeResult([])
         if "count(n)" in query:
             return _FakeResult([{"n": len(self.driver.rows)}])
         return _FakeResult([{"props": p} for p in self.driver.rows[:params.get("limit")]])
@@ -107,9 +125,17 @@ class _FakeResult:
         return self.rows[0] if self.rows else None
 
 
+#: What the notice states, for the countries these tests use. The runner no
+#: longer reads the country; the rows carry the notice's statement instead.
+_STATED = {"POL": "pl", "DEU": "de", "FRA": "fr", "GBR": "en", "NOR": "no"}
+
+
 def _contract(notice_id, value, title="Roboty budowlane", country="POL", **extra):
-    return {"ted_notice_id": notice_id, "value_eur": value, "country": country,
-            "title": title, **extra}
+    """A contract row. ``title_lang`` defaults to what its notice would state;
+    pass ``title_lang=None`` for one that states nothing."""
+    row = {"ted_notice_id": notice_id, "value_eur": value, "country": country,
+           "title": title, "title_lang": _STATED.get(country), **extra}
+    return {k: v for k, v in row.items() if v is not None}
 
 
 @pytest.fixture(name="writes")
@@ -138,8 +164,18 @@ def test_each_label_knows_what_it_is_worth():
     """A cohesion project has no value_eur; ordering by it orders by nothing."""
     assert VALUE_PROPERTY == {"Contract": "value_eur",
                               "CohesionProject": "detail_eu_contribution"}
-    assert COUNTRY_PROPERTY["CohesionProject"] == "detail_country"
     assert ID_PROPERTY["CohesionProject"] == "disclosure_id"
+
+
+@pytest.mark.asyncio
+async def test_only_canonically_keyed_contracts_are_selected_or_counted():
+    """A contract keyed by its OJ S reference is the duplicate of one keyed
+    by its publication number, and is queued to be merged into it."""
+    driver = FakeDriver([_contract("n", 9)])
+    await backfill.select_by_value(driver, "neo4j", "Contract", 5)
+    await backfill.count_candidates(driver, "neo4j", "Contract")
+    assert all("NOT n.ted_notice_id =~ '^[0-9]{4}/S .*'" in q for q in driver.queries)
+    assert CANONICAL_FILTER["CohesionProject"] == ""
 
 
 def test_anything_already_translated_is_left_alone():
@@ -148,24 +184,16 @@ def test_anything_already_translated_is_left_alone():
     assert not already_translated({"title": "x"})
 
 
-@pytest.mark.parametrize("country, expected", [
-    ("POL", "pl"), ("DEU", "de"), ("FRA", "fr"),
-    ("NOR", UNDETERMINED),     # not in the EU map: would have been "en"
-    ("BEL", UNDETERMINED),     # French and Dutch
-    ("MLT", UNDETERMINED),     # most Maltese TED notices are in English
-    ("LUX", UNDETERMINED), ("FIN", UNDETERMINED), (None, UNDETERMINED),
-])
-def test_the_source_language_is_only_asserted_when_the_country_says_so(country, expected):
-    assert source_language({"country": country}, "Contract") == expected
+@pytest.mark.parametrize("country", ["POL", "DEU", "BEL", "NOR", None])
+def test_the_buyers_country_never_decides_the_language(country):
+    """A Swedish buyer's English title is English; without a statement or a
+    detection the language is unknown, and is detected before translating."""
+    assert source_language({"country": country}) is None
+    assert source_language({"detail_country": country}) is None
 
 
-@pytest.mark.parametrize("country", ["LTU", "POL", "BEL", "NOR"])
-def test_a_cohesion_title_takes_the_language_kohesio_states(country):
-    """The country is never the language of a Kohesio title: English when the
-    loader stated it, unknown when the title came from the fallback column."""
-    assert source_language({"detail_country": country, "title_lang": "en"},
-                           "CohesionProject") == "en"
-    assert source_language({"detail_country": country}, "CohesionProject") == UNDETERMINED
+def test_a_cohesion_title_takes_the_language_kohesio_states():
+    assert source_language({"detail_country": "LTU", "title_lang": "en"}) == "en"
     assert "en" not in targets_for("en") and "lt" in targets_for("en")
 
 
@@ -387,28 +415,23 @@ def test_the_report_owns_up_to_spend_it_could_not_see():
 # ── source-language authority, and redoing wrong-source translations ──
 
 
-@pytest.mark.parametrize("props, label, expected", [
-    ({"country": "FRA", "title_lang": "en"}, "Contract", "en"),   # notice beats country
-    ({"country": "NOR", "title_lang": "no"}, "Contract", UNDETERMINED),  # outside the 24
-    ({"country": "GBR"}, "Contract", "en"),                       # extra country map
-    ({"country": "FRA"}, "Contract", "fr"),                       # country fallback
-    ({"detail_country": "LTU", "title_lang": "en"}, "CohesionProject", "en"),  # stated
-    ({"detail_country": "LTU"}, "CohesionProject", UNDETERMINED),          # no country fallback
+@pytest.mark.parametrize("props, expected", [
+    ({"title_lang": "en", "title_lang_detected": "fr"}, "en"),   # the notice beats a detection
+    ({"title_lang_detected": "fr"}, "fr"),                        # a kept detection
+    ({"title_lang": "no"}, UNDETERMINED),                         # outside the 24
+    ({"title_lang_detected": "sr"}, UNDETERMINED),                # outside the 24
+    ({"country": "FRA"}, None),                                   # unknown: detect first
 ])
-def test_the_source_language_comes_from_the_best_authority(props, label, expected):
-    assert source_language(props, label) == expected
+def test_the_source_language_comes_from_the_best_authority(props, expected):
+    assert source_language(props) == expected
 
 
 def test_a_title_in_its_own_language_was_translated_from_another():
-    assert translated_from_the_wrong_language(
-        {"country": "FRA", "title_lang": "en", "title_en": "copy"}, "Contract")
-    assert not translated_from_the_wrong_language(
-        {"country": "FRA", "title_lang": "fr", "title_en": "Works"}, "Contract")
-    assert translated_from_the_wrong_language(
-        {"detail_country": "LTU", "title_lang": "en", "title_en": "copy"}, "CohesionProject")
+    assert translated_from_the_wrong_language({"title_lang": "en", "title_en": "copy"})
+    assert translated_from_the_wrong_language({"title_lang_detected": "de", "title_de": "copy"})
+    assert not translated_from_the_wrong_language({"title_lang": "fr", "title_en": "Works"})
     # unknown source: undecidable, never redone
-    assert not translated_from_the_wrong_language(
-        {"country": "CHE", "title_de": "x"}, "Contract")
+    assert not translated_from_the_wrong_language({"country": "CHE", "title_de": "x"})
 
 
 def test_a_wrong_source_translation_is_left_alone_unless_redo_is_asked():
@@ -450,3 +473,133 @@ async def test_a_dry_run_says_how_many_it_would_redo(monkeypatch):
             _contract("m", 8, "Roboty", "POL")]
     progress = await _run(rows, FakeClient(), monkeypatch, apply_changes=False, redo=True)
     assert progress.redone == 1 and progress.translated == 2
+
+
+# ── detecting what nobody stated ──────────────────────────────
+
+
+async def _run_on(driver, client, monkeypatch, **kw):
+    monkeypatch.setattr(backfill, "LinguisticsClient", lambda **_kw: client)
+    return await run(driver, "neo4j", label=kw.pop("label", "Contract"),
+                     limit=len(driver.rows), budget_usd=kw.pop("budget_usd", 1.0),
+                     apply_changes=kw.pop("apply_changes", True), **kw)
+
+
+def _detections_kept(driver):
+    return [(row["id"], row["lang"], params["model"])
+            for query, params in driver.writes if "title_lang_detected" in query
+            for row in params["rows"]]
+
+
+@pytest.mark.asyncio
+async def test_a_title_nobody_stated_is_detected_once_kept_and_translated_from(
+        monkeypatch, writes):
+    rows = [_contract("a", 9, "Travaux de voirie", title_lang=None),
+            _contract("b", 8, "Travaux de voirie", title_lang=None),
+            _contract("c", 7, "Roboty", title_lang="pl")]
+    driver, client = FakeDriver(rows), FakeClient(detections={"Travaux de voirie": "fr"})
+    progress = await _run_on(driver, client, monkeypatch)
+    assert client.detect_calls == [["Travaux de voirie"]]          # asked once
+    assert _detections_kept(driver) == [("a", "fr", "nebius:google/gemma-3-27b-it"),
+                                        ("b", "fr", "nebius:google/gemma-3-27b-it")]
+    langs = {t: lang for items, _t in client.calls for t, lang in items}
+    assert langs == {"Travaux de voirie": "fr", "Roboty": "pl"}
+    assert progress.detected == 2 and progress.detect_usd > 0
+    assert sorted(w.source_id for w in writes) == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_a_detection_is_kept_beside_title_lang_never_in_it(monkeypatch, writes):
+    rows = [_contract("a", 9, "Travaux", title_lang=None)]
+    driver = FakeDriver(rows)
+    await _run_on(driver, FakeClient(detections={"Travaux": "fr"}), monkeypatch)
+    detect_writes = [q for q, _p in driver.writes if "title_lang_detected" in q]
+    assert detect_writes and all("n.title_lang =" not in q for q in detect_writes)
+    assert writes[0].details["source_lang"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_kept_detection_is_not_paid_for_again(monkeypatch, writes):
+    rows = [_contract("a", 9, "Travaux", title_lang=None, title_lang_detected="fr")]
+    client = FakeClient()
+    await _run_on(FakeDriver(rows), client, monkeypatch)
+    assert not client.detect_calls
+    assert client.calls[0][0] == [("Travaux", "fr")] and len(writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_title_with_no_words_is_kept_as_such_and_not_translated(monkeypatch, writes):
+    rows = [_contract("a", 9, "209G001799 — 60338950", title_lang=None)]
+    driver, client = FakeDriver(rows), FakeClient(detections={"209G001799 — 60338950": "und"})
+    progress = await _run_on(driver, client, monkeypatch)
+    assert _detections_kept(driver) == [("a", "und", "nebius:google/gemma-3-27b-it")]
+    assert not client.calls and not writes and progress.no_words == 1
+    assert has_no_words({"title_lang_detected": "und"})
+    assert not has_no_words({"title_lang": "fr", "title_lang_detected": "und"})
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_title_waits_for_the_next_run(monkeypatch, writes):
+    rows = [_contract("a", 9, "Mystery", title_lang=None), _contract("b", 8, "Roboty")]
+    driver, client = FakeDriver(rows), FakeClient(detections={"Mystery": None})
+    progress = await _run_on(driver, client, monkeypatch)
+    assert _detections_kept(driver) == []
+    assert [w.source_id for w in writes] == ["b"] and progress.undetected == 1
+    assert "left for the next run" in progress.report("Contract", dry_run=False)
+
+
+@pytest.mark.asyncio
+async def test_detection_failing_stops_the_run_and_fails_it(monkeypatch, writes):
+    rows = [_contract("a", 9, "Travaux", title_lang=None), _contract("b", 8, "Roboty")]
+    client = FakeClient(detect_raises=LinguisticsError("status=404"))
+    progress = await _run_on(FakeDriver(rows), client, monkeypatch)
+    assert not client.calls and not writes
+    assert progress.failures and "detection failed" in progress.stopped_because
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_detects_nothing_and_says_how_many_it_would(monkeypatch, writes):
+    rows = [_contract("a", 9, "Travaux", title_lang=None), _contract("b", 8, "Roboty")]
+    driver, client = FakeDriver(rows), FakeClient()
+    progress = await _run_on(driver, client, monkeypatch, apply_changes=False)
+    assert not client.detect_calls and not client.calls and not driver.writes and not writes
+    assert progress.to_detect == 1 and progress.translated == 2
+    assert "would detect      : 1" in progress.report("Contract", dry_run=True)
+
+
+@pytest.mark.asyncio
+async def test_a_redo_detects_the_translated_titles_whose_language_nobody_stated(
+        monkeypatch, writes):
+    """The identify-it prompt once copied titles into every language. With
+    the language detected, such a copy is decidable, and redone."""
+    rows = [_contract("a", 9, "Construction works", title_lang=None,
+                      title_en="Construction works", title_fr="Construction works")]
+    client = FakeClient(detections={"Construction works": "en"})
+    progress = await _run_on(FakeDriver(rows), client, monkeypatch, redo=True)
+    assert client.detect_calls == [["Construction works"]]
+    assert client.calls[0][0] == [("Construction works", "en")]
+    assert progress.redone == 1 and "en" not in writes[0].details["translations"]
+
+
+# ── never twice ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("writes")
+async def test_translations_record_the_title_they_were_made_from(monkeypatch):
+    driver = FakeDriver([_contract("a", 9, "Roboty")])
+    await _run_on(driver, FakeClient(), monkeypatch)
+    marks = [p for q, p in driver.writes if "title_translated_from" in q]
+    assert marks == [{"ids": ["a"], "title": "Roboty"}]
+
+
+def test_a_retitled_node_is_translated_again_and_nothing_else_is():
+    rows = [
+        _contract("changed", 9, "Roboty drogowe", title_de="Bauarbeiten",
+                  title_pl="Roboty budowlane", title_translated_from="Roboty budowlane"),
+        _contract("same", 8, "Roboty", title_de="Arbeiten", title_translated_from="Roboty"),
+        _contract("legacy", 7, "Dostawa", title_de="Lieferung"),      # made before the marker
+    ]
+    work, skipped = plan(rows, "Contract")
+    assert [w.node_ids for w in work] == [["changed"]] and skipped == 2
+    assert work[0].clear == ("title_pl",)     # the stale copy in its own language goes
