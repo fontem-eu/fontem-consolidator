@@ -48,6 +48,13 @@ languages costs 138 prompt + 830 completion tokens, about $0.00035. The top
 Usage::
 
     python -m src.consolidator.backfill_translations --label Contract --top-percent 0.1
+    python -m src.consolidator.backfill_translations --label Contract --min-value-eur 250e6
+
+The 0.1% cut-offs, measured on prod 2026-09-28 among titled canonical nodes
+with a value and rounded: contracts at EUR 250M (1,959 of 2,015,174,
+0.097%), cohesion grants at EUR 70M of EU contribution (250 of 245,262,
+0.102%). A euro figure says what the selection is in terms a reader can
+check; a percentage moves with every load.
     python -m src.consolidator.backfill_translations --label Contract --budget-usd 5.40 --apply
 """
 from __future__ import annotations
@@ -85,8 +92,11 @@ VALUE_PROPERTY: dict[str, str] = {
 #: Which nodes of each label are the canonical record. A contract keyed by
 #: its legacy OJ S reference ("2021/S 129-344226") has, or will have, a twin
 #: keyed by its publication number ("344226-2021"), which is the one kept.
+#: A substring test rather than the anchored regex: every legacy key has
+#: "/S " and no canonical one (a publication number or an eForms UUID) can,
+#: and over 4.4M contracts the regex took a count past Neo4j's 90 s limit.
 CANONICAL_FILTER: dict[str, str] = {
-    "Contract": "AND NOT n.ted_notice_id =~ '^[0-9]{4}/S .*'",
+    "Contract": "AND NOT n.ted_notice_id CONTAINS '/S '",
     "CohesionProject": "",
 }
 ID_PROPERTY: dict[str, str] = {
@@ -157,9 +167,11 @@ class Progress:  # pylint: disable=too-many-instance-attributes
 
 
 async def select_by_value(
-    driver: AsyncDriver, database: str, label: str, limit: int,
+    driver: AsyncDriver, database: str, label: str, limit: int | None = None,
+    *, min_value: float | None = None,
 ) -> list[dict]:
-    """The `limit` most valuable titled nodes of `label`, richest first.
+    """The titled nodes of `label` worth at least `min_value` euros, or else
+    the `limit` most valuable ones, richest first.
 
     Reads the whole property bag rather than a projection: deciding whether
     a node is already translated needs its `title_<lang>` properties, and
@@ -168,13 +180,15 @@ async def select_by_value(
     minute on 2.8M contracts. Run once per backfill, not per round.
     """
     value_prop = VALUE_PROPERTY[label]
+    worth = ">= $min_value" if min_value is not None else "IS NOT NULL"
     query = (
         f"MATCH (n:{label}) "
-        f"WHERE n.title IS NOT NULL AND n.{value_prop} IS NOT NULL {CANONICAL_FILTER[label]} "
-        f"RETURN properties(n) AS props ORDER BY n.{value_prop} DESC LIMIT $limit"
+        f"WHERE n.title IS NOT NULL AND n.{value_prop} {worth} {CANONICAL_FILTER[label]} "
+        f"RETURN properties(n) AS props ORDER BY n.{value_prop} DESC"
+        + (" LIMIT $limit" if min_value is None else "")
     )
     async with driver.session(database=database) as session:
-        result = await session.run(query, limit=limit)
+        result = await session.run(query, limit=limit, min_value=min_value)
         return [record["props"] async for record in result]
 
 
@@ -576,16 +590,18 @@ async def run(  # pylint: disable=too-many-arguments
     database: str,
     *,
     label: str,
-    limit: int,
+    limit: int | None = None,
     budget_usd: float,
     apply_changes: bool,
     backend: str = "nebius",
     redo: bool = False,
+    min_value: float | None = None,
 ) -> Progress:
-    """Select the richest `limit` nodes, skip the translated, detect the
-    languages nobody stated, then translate down the value order until the
-    selection or the budget runs out."""
-    rows = await select_by_value(driver, database, label, limit)
+    """Select the nodes worth at least `min_value` (else the richest
+    `limit`), skip the translated, detect the languages nobody stated, then
+    translate down the value order until the selection or the budget runs
+    out."""
+    rows = await select_by_value(driver, database, label, limit, min_value=min_value)
     dest = Destination(driver, database, label, apply_changes)
     progress = Progress(considered=len(rows))
     if not apply_changes:
@@ -625,6 +641,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="How much of the titled population to consider, richest first.",
     )
     parser.add_argument(
+        "--min-value-eur", type=float, default=None,
+        help="Consider every titled node worth at least this many euros "
+             "(value_eur for contracts, detail_eu_contribution for cohesion "
+             "projects), richest first. Replaces --top-percent.",
+    )
+    parser.add_argument(
         "--budget-usd", type=float, default=5.40,
         help="Hard ceiling on provider spend. EUR 5 at 1.08 USD/EUR.",
     )
@@ -652,19 +674,24 @@ async def main_async(args: argparse.Namespace) -> int:
     driver = await get_driver()
     database = settings.neo4j_database
     try:
-        total = await count_candidates(driver, database, args.label)
-        limit = max(1, round(total * args.top_percent / 100))
-        logger.info(
-            "{label}: {total:,} titled with a value; top {pct}% = {limit:,} nodes, "
-            "budget ${budget:.2f}",
-            label=args.label, total=total, pct=args.top_percent,
-            limit=limit, budget=args.budget_usd,
-        )
+        limit = None
+        if args.min_value_eur is not None:
+            logger.info("{label}: everything worth at least EUR {v:,.0f}, budget ${budget:.2f}",
+                        label=args.label, v=args.min_value_eur, budget=args.budget_usd)
+        else:
+            total = await count_candidates(driver, database, args.label)
+            limit = max(1, round(total * args.top_percent / 100))
+            logger.info(
+                "{label}: {total:,} titled with a value; top {pct}% = {limit:,} nodes, "
+                "budget ${budget:.2f}",
+                label=args.label, total=total, pct=args.top_percent,
+                limit=limit, budget=args.budget_usd,
+            )
         progress = await run(
             driver, database,
             label=args.label, limit=limit, budget_usd=args.budget_usd,
             apply_changes=args.apply, backend=args.backend,
-            redo=args.redo_wrong_source,
+            redo=args.redo_wrong_source, min_value=args.min_value_eur,
         )
         print(progress.report(args.label, dry_run=not args.apply))
         return 0 if not progress.failures else 1
