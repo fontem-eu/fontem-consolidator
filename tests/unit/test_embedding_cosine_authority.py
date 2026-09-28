@@ -319,3 +319,14 @@ async def test_applies_accepts_the_default_pipeline_encoder(monkeypatch):
     )
     rule = EmbeddingCosineSameAuthority()
     assert await rule.applies(e) is True
+
+
+async def test_a_vector_of_another_dimension_is_not_compared(monkeypatch):
+    """A 1024-d mistral-embed vector left from before LaBSE would query the
+    768-d index, which Neo4j rejects; that failed the entity's whole
+    consolidation (fontem-shared, 2026-09-28). It waits to be re-embedded."""
+    monkeypatch.setattr(_settings, "embedding_cosine_enabled", True)
+    e = _authority(name_embedding=[0.1] * 1024,
+                   name_embedding_encoder="mistral-embed@api-mistral-embed-2312",
+                   name_embedding_dim=1024)
+    assert await EmbeddingCosineSameAuthority().applies(e) is False

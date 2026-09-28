@@ -34,6 +34,7 @@ from loguru import logger
 from rapidfuzz.distance import JaroWinkler
 
 from src.config import settings
+from src.consolidator.neo4j.migrations import AUTHORITY_NAME_EMBEDDING_DIMS
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 
@@ -77,7 +78,11 @@ class EmbeddingCosineSameAuthority(Rule):
             return False
         if not isinstance(enc, str) or not enc:
             return False
-        return True
+        # A vector of another dimension (the 1024-d mistral-embed ones left
+        # from before LaBSE) cannot query the 768-d index: Neo4j rejects
+        # the call, which failed the whole consolidation of the entity. The
+        # enrichment rule re-embeds it; the next pass compares it.
+        return len(vec) == AUTHORITY_NAME_EMBEDDING_DIMS
 
     # Vector-index lookup + Cypher filter stack + Python-side
     # Jaro-Winkler gate all pivot off the same per-call settings —
