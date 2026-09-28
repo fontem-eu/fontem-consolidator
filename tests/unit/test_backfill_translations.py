@@ -174,7 +174,7 @@ async def test_only_canonically_keyed_contracts_are_selected_or_counted():
     driver = FakeDriver([_contract("n", 9)])
     await backfill.select_by_value(driver, "neo4j", "Contract", 5)
     await backfill.count_candidates(driver, "neo4j", "Contract")
-    assert all("NOT n.ted_notice_id =~ '^[0-9]{4}/S .*'" in q for q in driver.queries)
+    assert all("NOT n.ted_notice_id CONTAINS '/S '" in q for q in driver.queries)
     assert CANONICAL_FILTER["CohesionProject"] == ""
 
 
@@ -603,3 +603,50 @@ def test_a_retitled_node_is_translated_again_and_nothing_else_is():
     work, skipped = plan(rows, "Contract")
     assert [w.node_ids for w in work] == [["changed"]] and skipped == 2
     assert work[0].clear == ("title_pl",)     # the stale copy in its own language goes
+
+
+# ── a euro cut-off instead of a percentage ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_euro_cut_off_selects_everything_at_or_above_it_richest_first():
+    driver = FakeDriver([_contract("n", 9)])
+    await backfill.select_by_value(driver, "neo4j", "Contract", min_value=250e6)
+    (query,) = driver.queries
+    assert "n.value_eur >= $min_value" in query and "LIMIT" not in query
+    assert query.endswith("ORDER BY n.value_eur DESC")
+
+
+@pytest.mark.asyncio
+async def test_a_grant_cut_off_is_on_the_eu_contribution():
+    driver = FakeDriver([])
+    await backfill.select_by_value(driver, "neo4j", "CohesionProject", min_value=70e6)
+    assert "n.detail_eu_contribution >= $min_value" in driver.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_run_does_not_count_the_population(monkeypatch):
+    """Counting 4.4M contracts is a full scan the cut-off does not need."""
+    seen = {}
+
+    async def fake_run(_driver, _database, **kw):
+        seen.update(kw)
+        return Progress()
+
+    async def no_count(*_a):
+        raise AssertionError("population counted")
+
+    async def fake_driver():
+        return FakeDriver([])
+
+    async def no_close():
+        return None
+
+    monkeypatch.setattr(backfill, "run", fake_run)
+    monkeypatch.setattr(backfill, "count_candidates", no_count)
+    monkeypatch.setattr(backfill, "get_driver", fake_driver)
+    monkeypatch.setattr(backfill, "close_driver", no_close)
+    args = backfill.build_parser().parse_args(
+        ["--label", "Contract", "--min-value-eur", "250e6"])
+    assert await backfill.main_async(args) == 0
+    assert seen["min_value"] == 250e6 and seen["limit"] is None
