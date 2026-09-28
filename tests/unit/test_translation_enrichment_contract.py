@@ -32,25 +32,37 @@ pytestmark = pytest.mark.asyncio
 
 
 def _contract(**props) -> Entity:
-    base = {"title": "Neubau eines Baubetriebshofs", "country": "DEU"}
-    return Entity(entity_type="Contract", id="TED-1", properties={**base, **props})
+    """A canonical contract above the live cut-off whose notice states German.
+    Pass a key as None to drop it."""
+    base = {"title": "Neubau eines Baubetriebshofs", "country": "DEU",
+            "title_lang": "de", "value_eur": 300_000_000.0, "ted_notice_id": "123456-2024"}
+    merged = {k: v for k, v in {**base, **props}.items() if v is not None}
+    return Entity(entity_type="Contract", id="123456-2024", properties=merged)
 
 
 # ── pure helpers ──────────────────────────────────────────────────
 
 def test_missing_targets_excludes_source_and_set_langs():
-    e = _contract(country="DEU", title_en="Construction of a depot")
+    e = _contract(title_en="Construction of a depot")
     missing = missing_targets(e)
-    assert "de" not in missing   # inferred from country=DEU
+    assert "de" not in missing   # the notice states German
     assert "en" not in missing   # already present
     assert len(missing) == len(EU_OFFICIAL_LANGS) - 2
 
 
-def test_infer_source_lang_from_country_then_fallback():
-    assert infer_source_lang(_contract(country="FRA")) == "fr"
-    assert infer_source_lang(_contract(country="USA")) == "en"
-    # Explicit title_lang wins if ETL ever starts writing it.
-    assert infer_source_lang(_contract(country="DEU", title_lang="fr")) == "fr"
+def test_the_source_is_the_notice_then_a_kept_detection_never_the_country():
+    assert infer_source_lang(_contract(title_lang="fr")) == "fr"
+    assert infer_source_lang(_contract(title_lang=None, title_lang_detected="it")) == "it"
+    assert infer_source_lang(_contract(title_lang=None, country="FRA")) is None
+    assert infer_source_lang(_contract(title_lang="no")) == "und"    # outside the 24
+    assert infer_source_lang(_contract(title_lang=None, title_lang_detected="und")) is None
+
+
+def test_a_changed_title_is_translated_again_in_full():
+    e = _contract(title_en="Old", title_fr="Ancien", title_translated_from="Alter Titel")
+    assert len(missing_targets(e)) == len(EU_OFFICIAL_LANGS) - 1
+    same = _contract(title_en="Old", title_translated_from="Neubau eines Baubetriebshofs")
+    assert "en" not in missing_targets(same)
 
 
 # ── applies() gating ──────────────────────────────────────────────
@@ -83,6 +95,26 @@ async def test_applies_false_when_complete():
 async def test_applies_true_when_missing_any_target():
     rule = TranslationEnrichmentContract()
     assert await rule.applies(_contract()) is True
+
+
+async def test_live_translation_stops_below_the_cut_off():
+    """Below EUR 250M the budgeted backfill decides, not the live rule."""
+    rule = TranslationEnrichmentContract()
+    assert await rule.applies(_contract(value_eur=249_999_999.0)) is False
+    assert await rule.applies(_contract(value_eur=None)) is False
+    assert await rule.applies(_contract(value_eur=250_000_000.0)) is True
+
+
+async def test_a_legacy_oj_s_twin_is_not_translated_live():
+    rule = TranslationEnrichmentContract()
+    assert await rule.applies(_contract(ted_notice_id="2021/S 129-344226")) is False
+
+
+async def test_a_title_in_no_known_language_waits_for_the_backfill():
+    """The backfill runner detects before it translates; the live rule
+    never guesses from the buyer's country."""
+    rule = TranslationEnrichmentContract()
+    assert await rule.applies(_contract(title_lang=None)) is False
 
 
 # ── find_candidates self-candidate ─────────────────────────────────
@@ -143,6 +175,8 @@ async def test_resolve_happy_writes_translations_no_embedding(monkeypatch):
     assert decision.details["translations"]["en"] == "[en]X"
     # The rule translated from "de" but claims no title_lang: the loader owns it.
     assert decision.details["source_lang"] is None
+    # What it was translated from, so a later change of title is seen.
+    assert decision.details["translated_from"] == "Neubau eines Baubetriebshofs"
     # Contract rule intentionally doesn't compute embeddings (v1 scope).
     assert "embedding" not in decision.details
 

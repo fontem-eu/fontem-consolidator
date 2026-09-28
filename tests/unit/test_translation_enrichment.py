@@ -51,7 +51,13 @@ def test_missing_targets_when_nothing_set():
 def test_needs_embedding_detects_absence_and_empty():
     assert needs_embedding(_entity()) is True
     assert needs_embedding(_entity(name_embedding=[])) is True
-    assert needs_embedding(_entity(name_embedding=[0.1, 0.2])) is False
+    assert needs_embedding(_entity(name_embedding=[0.1] * 768)) is False
+
+
+def test_a_vector_from_an_encoder_of_another_dimension_is_redone():
+    """The 1024-d mistral-embed vectors made before the move to LaBSE can
+    neither sit in the 768-d index nor be compared with LaBSE ones."""
+    assert needs_embedding(_entity(name_embedding=[0.1] * 1024)) is True
 
 
 def test_infer_source_lang_prefers_explicit():
@@ -93,7 +99,7 @@ async def test_applies_skips_when_no_name():
 
 async def test_applies_skips_when_complete():
     rule = TranslationEnrichmentAuthority()
-    props = {"name": "X", "name_lang": "it", "name_embedding": [0.1] * 4}
+    props = {"name": "X", "name_lang": "it", "name_embedding": [0.1] * 768}
     for lang in EU_OFFICIAL_LANGS:
         if lang != "it":
             props[f"name_{lang}"] = f"[{lang}]X"
@@ -301,7 +307,7 @@ async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
             return httpx.Response(200, json={
                 "cached": False, "backend": payload["backend"],
                 "dim": dim, "vector": [0.25] * dim,
-                "encoder_id": "mistral-embed@api-mistral-embed-2312",
+                "encoder_id": "labse@1.0.0-836121a",
             })
         return httpx.Response(404)
 
@@ -318,12 +324,12 @@ async def test_resolve_requests_the_configured_embedding_backend(monkeypatch):
     decision = await rule.resolve(e, (await rule.find_candidates(e))[0])
 
     # Wire contract: the rule requested the configured (default) backend…
-    assert seen["embed"]["backend"] == default_backend == "mistral-embed"
+    assert seen["embed"]["backend"] == default_backend == "labse-local"
     # …and the vector it writes is dim-consistent with the vector index,
     # so Neo4j will actually index it.
     assert decision.action == "enrich"
     assert len(decision.details["embedding"]) == AUTHORITY_NAME_EMBEDDING_DIMS
-    assert decision.details["embedding_encoder"] == "mistral-embed@api-mistral-embed-2312"
+    assert decision.details["embedding_encoder"] == "labse@1.0.0-836121a"
 
 
 async def test_resolve_honours_embedding_backend_override(monkeypatch):

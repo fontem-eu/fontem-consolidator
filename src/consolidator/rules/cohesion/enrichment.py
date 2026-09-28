@@ -5,8 +5,9 @@ get `title_<lang>`. Cohesion projects are how EU funds are actually assigned —
 261,954 of them in prod, every one titled, none translated — and a Portuguese
 reader cannot currently tell what a Polish-titled project funded.
 
-Source language is English: Kohesio publishes every title in English, its
-own rendering of the beneficiary's original, whatever the country.
+Source language is what the loader states (English when the title came from
+Kohesio's English-name column), else a detection the backfill runner kept.
+Live, only grants at or above settings.live_translation_min_grant_eur.
 
 Same v1 scope as contracts: title only. The description
 (`detail_description`) is long-form and would multiply the token cost by an
@@ -18,39 +19,30 @@ from loguru import logger
 
 from src.config import settings
 from src.consolidator.clients.linguistics import (
-    EU_OFFICIAL_LANGS,
     LinguisticsClient,
     LinguisticsError,
     LinguisticsUnavailable,
 )
+from src.consolidator.rules import title_translation
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
 
 
-#: BCP-47 "undetermined": linguistics asks the model to identify it.
-UNDETERMINED = "und"
+UNDETERMINED = title_translation.UNDETERMINED
 
 
-def infer_source_lang(entity: Entity) -> str:
-    """The title's language as Kohesio states it, else "und".
-
-    The loader records title_lang="en" when the title came from Kohesio's
-    English-name column, and nothing when it came from the programme-
-    language fallback, whose language the source does not state. Neither
-    the country nor a blanket "English" is a statement: the country labelled
-    a Lithuanian project's English title as Lithuanian (2026-09-24), and
-    assuming English would mislabel every fallback title.
-    """
-    stated = (entity.properties.get("title_lang") or "").lower()
-    return stated if stated in EU_OFFICIAL_LANGS else UNDETERMINED
+def infer_source_lang(entity: Entity) -> str | None:
+    """The title's language as Kohesio states it ("en" when the title came
+    from its English-name column), else a detection the backfill runner
+    kept; None when neither. Neither the country nor a blanket "English" is
+    a statement: the country labelled a Lithuanian project's English title
+    Lithuanian (2026-09-24), and assuming English would mislabel every
+    programme-language fallback title."""
+    return title_translation.source_language(entity.properties)
 
 
 def missing_targets(entity: Entity) -> list[str]:
-    """EU locales with no title_<lang> on the node yet."""
-    src = infer_source_lang(entity)
-    return [
-        code for code in EU_OFFICIAL_LANGS
-        if code != src and not entity.properties.get(f"title_{code}")
-    ]
+    """EU locales to translate into (see title_translation.missing_targets)."""
+    return title_translation.missing_targets(entity.properties)
 
 
 class TranslationEnrichmentCohesionProject(Rule):
@@ -68,6 +60,10 @@ class TranslationEnrichmentCohesionProject(Rule):
         if not settings.linguistics_enabled:
             return False
         if not entity.properties.get("title"):
+            return False
+        if not title_translation.at_least(
+                entity.properties, "detail_eu_contribution",
+                settings.live_translation_min_grant_eur):
             return False
         return bool(missing_targets(entity))
 
@@ -126,6 +122,7 @@ class TranslationEnrichmentCohesionProject(Rule):
                 # source. A translator writing its assumption there would
                 # turn a guess into a statement for the next reader.
                 "source_lang": None,
+                "translated_from": title,
             },
         )
 

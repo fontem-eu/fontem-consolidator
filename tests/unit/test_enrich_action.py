@@ -113,3 +113,22 @@ async def test_enrich_contract_field_writes_title_prefix():
     assert props["title_en"] == "Winter service 2025ff"
     assert props["title_lang"] == "de"
     assert "name_en" not in props
+
+
+async def test_enrich_records_what_the_translations_were_made_from():
+    driver, captured = _capturing_driver()
+    d = _decision(entity_type="Contract", details={
+        "field": "title", "translations": {"en": "Winter service"},
+        "translated_from": "Winterdienst",
+    })
+    await actions._enrich(driver, "neo4j", decision=d)
+    assert captured["params"]["props"]["title_translated_from"] == "Winterdienst"
+
+
+async def test_no_translations_means_no_translated_from():
+    driver, captured = _capturing_driver()
+    d = _decision(entity_type="Contract", details={
+        "field": "title", "translations": {}, "translated_from": "Winterdienst",
+    })
+    await actions._enrich(driver, "neo4j", decision=d)
+    assert "params" not in captured    # nothing to write, nothing written

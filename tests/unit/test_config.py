@@ -17,13 +17,12 @@ from src.consolidator.neo4j import migrations
 
 # ── default backend ↔ vector index dims (the DOA regression) ─────────
 
-def test_default_embedding_backend_is_mistral_embed():
-    """labse-local was the intended default (#189) but the signed model
-    mirror ships only config/pooling for labse-1.0.0 — no weights — so
-    the backend 500s on every call (verified in prod 2026-07-18).
-    mistral-embed works today, costs cents for short names, and the
-    encoder_id stamp keeps a future labse migration clean."""
-    assert Settings().linguistics_embedding_backend == "mistral-embed"
+def test_default_embedding_backend_is_labse():
+    """labse-local: self-hosted, free, multilingual (owner's choice,
+    2026-09-28, when the Mistral key was revoked). Its "missing weights"
+    in July were fetch-models OOMKilled mid-download and then trusting
+    config.json; fontem-linguistics fixed the fetch."""
+    assert Settings().linguistics_embedding_backend == "labse-local"
 
 
 def test_default_backend_dim_matches_authority_vector_index():
@@ -92,15 +91,24 @@ def test_module_singleton_uses_the_same_defaults():
     assert settings.linguistics_embedding_backend in EMBEDDING_BACKEND_DIMS
 
 
-def test_translation_default_is_mistral():
-    """Measured on prod 2026-07-18: one Mistral chat call translates all
-    23 target languages per authority (~166k one-time calls under the
-    linguistics service's $50/day spend cap), while a 23-target
-    nllb-local request takes 182s on CPU and 502s — months of wall
-    clock for the same backfill. The paid-but-capped API is the design;
-    nllb-local stays reachable via
-    CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND for offline use."""
-    assert Settings().linguistics_translation_backend == "mistral"
+def test_translation_default_is_nebius():
+    """Nebius (owner's choice, 2026-09-28): one chat call translates all
+    23 target languages under linguistics' own daily cap, at a fraction of
+    Mistral's price, and the Mistral key is revoked. nllb-local stays
+    reachable via CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND for
+    offline use (a 23-target request takes minutes on CPU)."""
+    assert Settings().linguistics_translation_backend == "nebius"
+
+
+def test_the_live_rules_translate_only_above_the_owners_cut_offs():
+    assert Settings().live_translation_min_contract_eur == 250_000_000
+    assert Settings().live_translation_min_grant_eur == 70_000_000
+
+
+def test_linguistics_client_translates_with_the_settings_default():
+    assert LinguisticsClient(base_url="http://x").translation_backend == (
+        Settings().linguistics_translation_backend
+    )
 
 
 def test_nllb_translation_stays_available_via_env_override(monkeypatch):
