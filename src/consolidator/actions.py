@@ -495,6 +495,9 @@ async def _enrich(
     embedding = decision.details.get("embedding")
     embedding_encoder = decision.details.get("embedding_encoder")
     source_lang = decision.details.get("source_lang")
+    # The text the translations were made from, so a later change to it is
+    # seen as one rather than left under stale translations.
+    translated_from = decision.details.get("translated_from")
 
     if embedding is not None and not embedding_encoder:
         raise ValueError(
@@ -512,6 +515,8 @@ async def _enrich(
         props[f"{field}_embedding_dim"] = len(embedding)
     if source_lang:
         props[f"{field}_lang"] = source_lang
+    if translations and translated_from:
+        props[f"{field}_translated_from"] = translated_from
     if not props:
         return
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from src.config import settings
+from src.config import EMBEDDING_BACKEND_DIMS, settings
 from src.consolidator.clients.linguistics import (
     EU_OFFICIAL_LANGS,
     LinguisticsClient,
@@ -49,8 +49,13 @@ def missing_targets(entity: Entity) -> list[str]:
 
 
 def needs_embedding(entity: Entity) -> bool:
+    """No vector yet, or one from an encoder of another dimension: the
+    1024-d mistral-embed vectors made before the move to LaBSE (768-d)
+    cannot sit in the index or be compared with LaBSE ones."""
     vec = entity.properties.get("name_embedding")
-    return not isinstance(vec, list) or len(vec) == 0
+    want = EMBEDDING_BACKEND_DIMS.get(settings.linguistics_embedding_backend)
+    return not isinstance(vec, list) or len(vec) == 0 or (
+        want is not None and len(vec) != want)
 
 
 class TranslationEnrichmentAuthority(Rule):

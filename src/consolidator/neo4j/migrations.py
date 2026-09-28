@@ -9,7 +9,7 @@ from neo4j.exceptions import ClientError
 # vector whose length differs from the index declaration, so a mismatch
 # doesn't error — it just makes every k-NN lookup return nothing.
 # Pinned by tests/unit/test_config.py.
-AUTHORITY_NAME_EMBEDDING_DIMS = 1024
+AUTHORITY_NAME_EMBEDDING_DIMS = 768
 
 INDEX_CYPHER = [
     (
@@ -130,7 +130,7 @@ INDEX_CYPHER = [
     # scan per call. Composite for the same reason as registered_as.
     "CREATE INDEX authority_national_id_country IF NOT EXISTS "
     "FOR (a:Authority) ON (a.national_id, a.country)",
-    # Vector index on Authority name_embedding (mistral-embed, 1024-d,
+    # Vector index on Authority name_embedding (labse-local, 768-d,
     # cosine — see AUTHORITY_NAME_EMBEDDING_DIMS).
     # Powers the embedding_cosine_authority rule's k-NN lookup; without
     # it the rule would fall back to a full 61k × 768 dot-product scan

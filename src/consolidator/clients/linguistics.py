@@ -33,12 +33,12 @@ EU_OFFICIAL_LANGS: tuple[str, ...] = (
 class LinguisticsClient:
     base_url: str
     timeout_s: float = 60.0
-    translation_backend: str = "mistral"
-    # Default matches settings.linguistics_embedding_backend — mistral-embed
-    # is 1024-d, consistent with the authority_name_embedding_idx vector
-    # index. Callers that want mistral-embed must also provision a
-    # 1024-d index.
-    embedding_backend: str = "mistral-embed"
+    translation_backend: str = "nebius"
+    # Default matches settings.linguistics_embedding_backend — labse-local
+    # is 768-d, consistent with the authority_name_embedding_idx vector
+    # index. Callers that want another encoder must also provision an
+    # index of its dimension.
+    embedding_backend: str = "labse-local"
     _client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "LinguisticsClient":

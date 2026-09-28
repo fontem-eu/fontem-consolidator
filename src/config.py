@@ -49,18 +49,29 @@ class Settings(BaseSettings):
     linguistics_url: str = "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080"
     linguistics_enabled: bool = True
     linguistics_timeout_s: float = 60.0
-    linguistics_translation_backend: str = "mistral"
+    # Nebius (owner's choice, 2026-09-28): the Mistral key is revoked and
+    # Nebius serves the same OpenAI-compatible chat at a fraction of the price.
+    linguistics_translation_backend: str = "nebius"
+    # The live title rules translate only nodes worth at least this much;
+    # below, budgeted backfill runs decide (owner's cut-offs, 2026-09-28:
+    # 0.1% of titled canonical nodes with a value, rounded).
+    live_translation_min_contract_eur: float = 250_000_000.0
+    live_translation_min_grant_eur: float = 70_000_000.0
     # Default embedding backend MUST form a working pipeline with the
-    # authority_name_embedding_idx vector index (1024-d, migrations.py):
-    # mistral-embed is 1024-d, so enrichment writes vectors the index can
-    # hold and embedding_cosine_authority can compare. mistral-embed
-    # (1024-d) stays available via CONSOLIDATOR_LINGUISTICS_EMBEDDING_BACKEND,
-    # but switching requires a matching-dim vector index — 1024-d vectors
-    # are silently NOT indexed by a mismatched-dim index, which is exactly how the
-    # embedding-similarity feature shipped dead-on-arrival (zero
-    # authorities enriched in prod). See EMBEDDING_BACKEND_DIMS above and
-    # tests/unit/test_config.py which pins this consistency.
-    linguistics_embedding_backend: str = "mistral-embed"
+    # authority_name_embedding_idx vector index (768-d, migrations.py):
+    # labse-local is 768-d, so enrichment writes vectors the index can
+    # hold and embedding_cosine_authority can compare. A mismatched-dim
+    # index silently does NOT index vectors, which is exactly how the
+    # embedding-similarity feature shipped dead-on-arrival once. See
+    # EMBEDDING_BACKEND_DIMS above and tests/unit/test_config.py, which
+    # pins this consistency.
+    #
+    # LaBSE, self-hosted in linguistics (owner's choice, 2026-09-28): free,
+    # multilingual, no key to lose. It was abandoned in July because its
+    # weights were "missing from the mirror"; the real cause was the
+    # fetch-models init container OOMKilled mid-download and then trusting
+    # config.json as proof of a complete snapshot (fontem-linguistics fix).
+    linguistics_embedding_backend: str = "labse-local"
 
     # embedding_cosine_authority rule — flags Authority duplicates whose
     # LaBSE name-embedding cosine is above threshold. Never auto-merges.

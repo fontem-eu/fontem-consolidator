@@ -11,36 +11,33 @@ from loguru import logger
 
 from src.config import settings
 from src.consolidator.clients.linguistics import (
-    EU_OFFICIAL_LANGS,
     LinguisticsClient,
     LinguisticsError,
     LinguisticsUnavailable,
 )
+from src.consolidator.rules import title_translation
 from src.consolidator.rules.base import Candidate, Decision, Entity, Rule
-from src.consolidator.rules.multilingual_shared import source_lang_from_country
 
 
-def infer_source_lang(entity: Entity) -> str:
-    """Source language for a contract's title.
-
-    The loader writes title_lang from the notice itself (the title's own
-    languageID on eForms, the original form's LG on legacy TED). Only a
-    contract loaded before that still falls back to the buyer's country,
-    and "en" for unknowns.
-    """
-    explicit = (entity.properties.get("title_lang") or "").lower()
-    if explicit:
-        return explicit
-    return source_lang_from_country(entity.properties.get("country"))
+def infer_source_lang(entity: Entity) -> str | None:
+    """The notice's stated language, else a detection the backfill runner
+    kept; None when neither (the runner detects, a live rule never guesses)."""
+    return title_translation.source_language(entity.properties)
 
 
 def missing_targets(entity: Entity) -> list[str]:
-    """Return EU locales that have no title_<lang> on the node yet."""
-    src = infer_source_lang(entity)
-    return [
-        code for code in EU_OFFICIAL_LANGS
-        if code != src and not entity.properties.get(f"title_{code}")
-    ]
+    """EU locales to translate into (see title_translation.missing_targets)."""
+    return title_translation.missing_targets(entity.properties)
+
+
+def worth_translating_live(entity: Entity) -> bool:
+    """A canonical contract at or above the live cut-off. A contract keyed by
+    its legacy OJ S reference is the duplicate of its canonical twin."""
+    props = entity.properties
+    if "/S " in str(props.get("ted_notice_id") or entity.id):
+        return False
+    return title_translation.at_least(
+        props, "value_eur", settings.live_translation_min_contract_eur)
 
 
 class TranslationEnrichmentContract(Rule):
@@ -58,6 +55,8 @@ class TranslationEnrichmentContract(Rule):
         if not settings.linguistics_enabled:
             return False
         if not entity.properties.get("title"):
+            return False
+        if not worth_translating_live(entity):
             return False
         return bool(missing_targets(entity))
 
@@ -129,5 +128,6 @@ class TranslationEnrichmentContract(Rule):
                 # title_lang belongs to the loader. Writing the language this
                 # rule assumed would turn a country guess into a statement.
                 "source_lang": None,
+                "translated_from": title,
             },
         )
