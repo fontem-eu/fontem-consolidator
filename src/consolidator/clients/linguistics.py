@@ -111,6 +111,23 @@ class LinguisticsClient:
             for r in resp.get("results", [])
         ]
 
+    async def detect(self, texts: list[str]) -> tuple[list[str | None], str | None, float]:
+        """Each text's language: ``([code or None, ...], model, cost_usd)``.
+
+        Codes are ISO 639-1, or "und" for a text with no words to judge by;
+        None where the service got no usable answer. Always asks Nebius, the
+        one backend that detects, whatever this client translates with.
+        """
+        if not texts:
+            return [], None, 0.0
+        resp = await self._post_json("/detect", {"texts": texts, "backend": "nebius"})
+        results = resp.get("results") or []
+        if len(results) != len(texts):
+            raise LinguisticsError(
+                f"malformed /detect response: {len(results)} answers for {len(texts)} texts")
+        return ([r.get("lang") for r in results], resp.get("model"),
+                float(resp.get("cost_usd") or 0.0))
+
     async def embed(self, text: str) -> tuple[list[float], str]:
         """Return (vector, encoder_id).
 
