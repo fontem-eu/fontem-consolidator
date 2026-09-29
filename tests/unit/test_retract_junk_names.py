@@ -152,7 +152,9 @@ class _Result:
         return self._rows[0] if self._rows else None
 
 
-class _Graph:
+# One attribute per store the retraction touches (graph state, writes, the
+# Postgres decision log) — a fake that mirrors them, not a design to split.
+class _Graph:  # pylint: disable=too-many-instance-attributes
     """Junk nodes, their partners, their contracts. Records every write
     statement (the correction Cypher) so tests can see what landed."""
 
@@ -162,6 +164,8 @@ class _Graph:
         self.contracts = list(contracts)      # (junk_id, ted_notice_id)
         self.corrected: set[frozenset] = set()
         self.writes: list[tuple[str, dict]] = []
+        # audit.record_review, patched by _run: the decision log is Postgres.
+        self.reviews = AsyncMock()
         self.scans = 0
 
     def run(self, query, **params):
@@ -315,7 +319,8 @@ def test_the_scan_drops_rows_the_prefilter_over_matched():
 
 def _run(graph, nodes, *, batch=2, emit=None):
     emit = emit or AsyncMock(side_effect=len)
-    with patch.object(rj.eventlog, "emit_retract_same_as_many", emit):
+    with patch.object(rj.eventlog, "emit_retract_same_as_many", emit), \
+         patch("src.consolidator.actions.audit.record_review", graph.reviews):
         out = asyncio.run(rj.retract(
             _Driver(graph), "neo4j", nodes, batch=batch, reviewer="c1-bot",
         ))
@@ -345,15 +350,18 @@ def test_a_run_emits_per_batch_then_records_each_pair():
         "fuzzy_name_same_country", "exact_name_country_match",
     }
 
-    # Every pair got the endpoint's two writes: the correction and its log.
+    # Every pair got the endpoint's two writes: the correction in the graph
+    # and its log in Postgres (audit.record_review), never a graph node.
     corrections = [p for q, p in graph.writes if "NOT_SAME_AS" in q]
-    logs = [p for q, p in graph.writes if "DecisionLog" in q]
+    logs = [call.kwargs for call in graph.reviews.await_args_list]
     assert len(corrections) == len(logs) == 6
+    assert not any("DecisionLog" in q for q, _ in graph.writes)
     assert {(c["from"], c["to"]) for c in corrections} >= {
         ("junk-0", "real-0"), ("junk-0", "real-x"),
     }
     assert all(c["reviewer"] == "c1-bot" and c["reason"] == rj.REASON for c in corrections)
-    assert all(l["entity_type"] == "Company" and l["note"] == rj.REASON for l in logs)
+    assert all(l["entity_type"] == "Company" and l["review_note"] == rj.REASON
+               and l["decision_type"] == "manual_correction" for l in logs)
     assert any("DELETE c" in q for q, _ in graph.writes), "the settled candidate must go"
 
     # The report: every node, its contracts, the pairs retracted.

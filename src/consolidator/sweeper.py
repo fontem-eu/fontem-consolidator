@@ -62,7 +62,7 @@ from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 from prometheus_client import Counter, Gauge, start_http_server
 
 from src.config import settings
-from src.consolidator import engine
+from src.consolidator import audit, engine
 from src.consolidator.entities import id_key_for
 from src.consolidator.neo4j import migrations
 from src.consolidator.neo4j.client import close_driver, get_driver
@@ -557,6 +557,11 @@ async def run(config: SweeperConfig | None = None) -> None:
         for label in config.labels
     ]
 
+    tasks.append(asyncio.create_task(
+        _prune_decisions(stop_event, settings.decision_retention_days),
+        name="prune-decisions",
+    ))
+
     await stop_event.wait()
     logger.info("sweeper: shutdown signal received, draining tasks")
     for task in tasks:
@@ -564,6 +569,21 @@ async def run(config: SweeperConfig | None = None) -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
     await close_driver()
     logger.info("sweeper: stopped cleanly")
+
+
+#: How often the sweeper prunes old rule decisions from the decision log.
+PRUNE_INTERVAL_S = 3600.0
+
+
+async def _prune_decisions(stop_event: asyncio.Event, retention_days: int) -> None:
+    """Hourly: drop rule decisions past retention (audit.prune). A failure
+    is logged and retried next hour; it never stops the sweep."""
+    while not stop_event.is_set():
+        try:
+            await audit.prune(retention_days)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("sweeper: pruning the decision log failed")
+        await _interruptible_sleep(stop_event, PRUNE_INTERVAL_S)
 
 
 def main() -> None:

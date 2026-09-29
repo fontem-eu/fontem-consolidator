@@ -1,5 +1,6 @@
 """Engine unit test with mocked rules + mocked Neo4j writes."""
 
+import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -80,8 +81,6 @@ async def test_engine_promotes_flag_to_merge_above_threshold():
     with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-x")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -108,8 +107,6 @@ async def test_engine_does_not_promote_below_threshold():
     with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-y")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -137,8 +134,6 @@ async def test_engine_does_not_promote_when_conflict_set():
     with patch("src.consolidator.engine.list_rules", return_value=[rule]), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-z")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -157,8 +152,6 @@ async def test_engine_records_run_and_decision():
     with patch("src.consolidator.engine.list_rules", return_value=[fake]), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-1")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ) as rec, patch(
@@ -168,11 +161,13 @@ async def test_engine_records_run_and_decision():
             AsyncMock(), "neo4j", entity_type="Company", entity_id="gmr-A"
         )
 
-    assert result.run_id == "run-1"
     assert result.rules_fired == 1
     assert len(result.decisions) == 1
     assert result.decisions[0]["outcome"] == "flag"
     rec.assert_awaited_once()
+    # The decision is recorded under the run's own id; no run node exists.
+    assert rec.await_args.kwargs["run_id"] == result.run_id
+    assert uuid.UUID(result.run_id)
 
 
 class _ConflictRule(Rule):
@@ -214,8 +209,6 @@ async def test_engine_lets_multiple_flag_rules_fire_on_same_pair():
     ), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-1")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -246,8 +239,6 @@ async def test_engine_still_short_circuits_after_auto_merge():
     ), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-2")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -285,7 +276,7 @@ class _EnrichRule(_FakeRule):
         )
 
 
-def _patch_engine_deps(rules, run_id, capture_fn):
+def _patch_engine_deps(rules, capture_fn):
     """Common scaffolding for the three mode tests below."""
     return [
         patch("src.consolidator.engine.list_rules", return_value=rules),
@@ -293,21 +284,19 @@ def _patch_engine_deps(rules, run_id, capture_fn):
             "src.consolidator.engine.entities.load",
             AsyncMock(return_value=Entity("Company", "gmr-A", {"name": "A"})),
         ),
-        patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value=run_id)),
-        patch("src.consolidator.engine.audit.end_run", AsyncMock()),
         patch("src.consolidator.engine.audit.record_decision", AsyncMock()),
         patch("src.consolidator.engine.actions.execute", capture_fn),
     ]
 
 
-async def _run_with_mode(rules, run_id, mode):
+async def _run_with_mode(rules, mode):
     fired: list[str] = []
 
     async def _capture(_d, _db, *, decision, **_):
         fired.append(decision.rule_name)
         return decision.action
 
-    patches = _patch_engine_deps(rules, run_id, _capture)
+    patches = _patch_engine_deps(rules, _capture)
     for p in patches:
         p.start()
     try:
@@ -325,7 +314,7 @@ async def _run_with_mode(rules, run_id, mode):
 async def test_engine_match_only_skips_enrich_rules():
     """mode='match_only' runs dedup/match rules but skips enrich rules.
     Used by the dedup sweep so it isn't blocked on linguistics RTTs."""
-    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-mo", "match_only")
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "match_only")
     assert fired == ["fake"]
 
 
@@ -333,7 +322,7 @@ async def test_engine_match_only_skips_enrich_rules():
 async def test_engine_enrich_only_skips_match_rules():
     """mode='enrich_only' runs translation/enrichment rules only.
     Used by the translation-backfill sweep."""
-    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-eo", "enrich_only")
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "enrich_only")
     assert fired == ["fake_enrich"]
 
 
@@ -341,18 +330,22 @@ async def test_engine_enrich_only_skips_match_rules():
 async def test_engine_default_mode_runs_everything():
     """mode='all' is the default and preserves the existing behaviour of
     running every applicable rule."""
-    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "run-all", None)
+    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], None)
     assert sorted(fired) == ["fake", "fake_enrich"]
 
 
 @pytest.mark.asyncio
 async def test_engine_handles_missing_entity():
+    """Nothing to decide, so nothing is recorded — neither in Postgres
+    nor as a run node in the graph."""
+    driver = AsyncMock()
     with patch("src.consolidator.engine.entities.load", AsyncMock(return_value=None)), patch(
-        "src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-X")
-    ), patch("src.consolidator.engine.audit.end_run", AsyncMock()) as end:
+        "src.consolidator.engine.audit.record_decision", AsyncMock()
+    ) as rec:
         result = await engine.consolidate(
-            AsyncMock(), "neo4j", entity_type="Company", entity_id="missing"
+            driver, "neo4j", entity_type="Company", entity_id="missing"
         )
     assert result.rules_fired == 0
     assert result.decisions == []
-    end.assert_awaited_once()
+    rec.assert_not_awaited()
+    driver.session.assert_not_called()

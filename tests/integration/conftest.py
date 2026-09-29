@@ -118,7 +118,7 @@ async def driver(neo4j_container) -> AsyncIterator[AsyncDriver]:
             "CREATE FULLTEXT INDEX company_name_ft IF NOT EXISTS "
             "FOR (c:Company) ON EACH [c.name]"
         )
-        # Consolidator's own audit indexes
+        # The consolidator's startup indexes
         from src.consolidator.neo4j.migrations import apply
 
         await apply(drv, "neo4j")

@@ -152,83 +152,49 @@ def test_decide_not_found_returns_404(client):
 # each one appends a WHERE clause and a bind, and none of that was exercised.
 
 
-def _captured_run(driver):
-    """The (query, params) the route actually sent to Neo4j."""
-    session = driver.session.return_value.__aenter__.return_value
-    call = session.run.await_args
-    return call.args[0], call.kwargs
+def _decisions_patch(rows):
+    return patch("src.api.routes.decisions.audit.list_decisions", AsyncMock(return_value=rows))
 
 
 def test_list_decisions_empty(client):
     c, _ = client
-    driver = _stub_session([[]])
-    with patch("src.api.routes.decisions.get_driver", AsyncMock(return_value=driver)):
+    with _decisions_patch([]):
         r = c.get("/decisions")
     assert r.status_code == 200
     assert r.json() == {"decisions": [], "next_cursor": None}
 
 
-def test_list_decisions_without_filters_emits_no_where_clause(client):
-    """No filters must not produce a dangling `WHERE`, which is a syntax error."""
+def test_list_decisions_passes_every_filter_to_the_log(client):
+    """Each query param reaches the Postgres decision log as a filter."""
     c, _ = client
-    driver = _stub_session([[{"d": {"decided_at": "2026-04-20T10:00:00Z"}}]])
-    with patch("src.api.routes.decisions.get_driver", AsyncMock(return_value=driver)):
-        r = c.get("/decisions")
-    assert r.status_code == 200
-    query, params = _captured_run(driver)
-    assert "WHERE" not in query
-    assert params == {"limit": 100}
-
-
-def test_list_decisions_applies_every_filter(client):
-    """Each query param contributes one WHERE clause and one bind."""
-    c, _ = client
-    driver = _stub_session([[]])
-    with patch("src.api.routes.decisions.get_driver", AsyncMock(return_value=driver)):
+    with _decisions_patch([]) as listed:
         r = c.get(
             "/decisions?entity_type=Company&entity_id=abc&rule_name=fuzzy"
             "&decision_type=merge&since=2026-01-01&cursor=2026-04-01&limit=25"
         )
     assert r.status_code == 200
-    query, params = _captured_run(driver)
-    assert "WHERE" in query
-    for clause in (
-        "d.entity_type = $entity_type",
-        "(d.source_id = $entity_id OR d.target_id = $entity_id)",
-        "d.rule_name = $rule_name",
-        "d.decision_type = $decision_type",
-        "d.decided_at >= $since",
-        "d.decided_at < $cursor",
-    ):
-        assert clause in query, clause
-    assert params == {
+    assert listed.await_args.kwargs == {
+        "entity_type": "Company", "entity_id": "abc", "rule_name": "fuzzy",
+        "decision_type": "merge", "since": "2026-01-01", "cursor": "2026-04-01",
         "limit": 25,
-        "entity_type": "Company",
-        "entity_id": "abc",
-        "rule_name": "fuzzy",
-        "decision_type": "merge",
-        "since": "2026-01-01",
-        "cursor": "2026-04-01",
     }
 
 
 def test_list_decisions_sets_next_cursor_when_page_is_full(client):
     """A full page means there may be more, so hand back a cursor."""
     c, _ = client
-    rows = [{"d": {"decided_at": f"2026-04-0{i}T00:00:00Z"}} for i in (3, 2)]
-    driver = _stub_session([rows])
-    with patch("src.api.routes.decisions.get_driver", AsyncMock(return_value=driver)):
+    rows = [{"decided_at": f"2026-04-0{i}T00:00:00+00:00"} for i in (3, 2)]
+    with _decisions_patch(rows):
         r = c.get("/decisions?limit=2")
     body = r.json()
     assert len(body["decisions"]) == 2
-    assert body["next_cursor"] == "2026-04-02T00:00:00Z"
+    assert body["next_cursor"] == "2026-04-02T00:00:00+00:00"
 
 
 def test_list_decisions_omits_next_cursor_on_a_partial_page(client):
     """Fewer rows than the limit means the end; a cursor would loop forever."""
     c, _ = client
-    driver = _stub_session([[{"d": {"decided_at": "2026-04-03T00:00:00Z"}}]])
-    with patch("src.api.routes.decisions.get_driver", AsyncMock(return_value=driver)):
+    with _decisions_patch([{"decided_at": "2026-04-03T00:00:00+00:00"}]):
         r = c.get("/decisions?limit=50")
     assert r.json()["next_cursor"] is None
 

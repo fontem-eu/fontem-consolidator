@@ -42,8 +42,6 @@ async def test_exclude_rule_prefix_skips_matching_rules():
     with patch("src.consolidator.engine.list_rules", return_value=rules), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-1")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
@@ -67,8 +65,6 @@ async def test_no_prefix_runs_all_rules():
     with patch("src.consolidator.engine.list_rules", return_value=rules), patch(
         "src.consolidator.engine.entities.load",
         AsyncMock(return_value=Entity("Company", "gmr-A", {})),
-    ), patch("src.consolidator.engine.audit.start_run", AsyncMock(return_value="run-2")), patch(
-        "src.consolidator.engine.audit.end_run", AsyncMock()
     ), patch(
         "src.consolidator.engine.audit.record_decision", AsyncMock()
     ), patch(
