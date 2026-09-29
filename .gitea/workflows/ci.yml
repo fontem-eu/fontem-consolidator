@@ -109,14 +109,6 @@ jobs:
               vendor/gmr-events
           rm -rf vendor/gmr-event-schemas/.git vendor/gmr-events/.git
 
-      - id: sbom
-        name: Generate + upload SBOM
-        uses: ./.ci-actions/actions/sbom-generate
-        with:
-          language: python
-          project-name: fontem-consolidator
-          project-version: ${{ github.sha }}
-
       - id: image
         name: Build, push, sign, attest
         uses: ./.ci-actions/actions/docker-build-sign
@@ -125,7 +117,9 @@ jobs:
           cosign-key: ${{ secrets.COSIGN_KEY }}
           registry-user: ${{ secrets.REGISTRY_USER }}
           registry-password: ${{ secrets.REGISTRY_PASSWORD }}
-          sbom-path: ${{ steps.sbom.outputs.sbom-path }}
+          # No shell, package manager or pip in the runtime image: fail the
+          # build if one comes back (e.g. with a new base).
+          minimal-enforce: "true"
 
       - name: Deploy to gitops (shared — singleton)
         # Consolidator's only ArgoCD-managed instance is the fontem-shared one
