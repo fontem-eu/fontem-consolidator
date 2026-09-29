@@ -9,11 +9,7 @@ from src.consolidator.rules.authority.basic import (
 from src.consolidator.rules.authority.embedding_similarity import (
     EmbeddingCosineSameAuthority,
 )
-from src.consolidator.rules.authority.enrichment import TranslationEnrichmentAuthority
-from src.consolidator.rules.cohesion.enrichment import (
-    TranslationEnrichmentCohesionProject,
-)
-from src.consolidator.rules.contract.enrichment import TranslationEnrichmentContract
+from src.consolidator.rules.authority.name_embedding import AuthorityNameEmbedding
 from src.consolidator.rules.company.exact_identifiers import (
     ExactCikMatch,
     ExactLeiMatch,
@@ -51,10 +47,10 @@ def load_all() -> None:
     register(FuzzyNameSameCountry())
     register(GdsNodeSimilarityCompany())
     # Authority
-    # Enrichment runs first (confidence 1.0, tie-broken by insertion order):
-    # if the authority gets merged later in the same run, combined-property
-    # semantics preserve translations on the canonical node.
-    register(TranslationEnrichmentAuthority())
+    # The name vector first (confidence 1.0, tie-broken by insertion order):
+    # the cosine rule below compares it. Translating names is not this
+    # service's job — fontem-translator publishes TranslateAuthorityName.
+    register(AuthorityNameEmbedding())
     register(ExactAuthorityIdMatch())
     register(ExactNameCountryMatchAuthority())
     # Cross-country same-name flag for EU bodies (EEAS, JRC, eu-LISA, …).
@@ -66,6 +62,3 @@ def load_all() -> None:
     register(EmbeddingCosineSameAuthority())
     register(FuzzyNameSameCountryAuthority())
     register(GdsNodeSimilarityAuthority())
-    # Contract — v1 multilingual: title-only translation.
-    register(TranslationEnrichmentContract())
-    register(TranslationEnrichmentCohesionProject())

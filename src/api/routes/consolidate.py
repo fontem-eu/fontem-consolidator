@@ -11,20 +11,13 @@ router = APIRouter()
 
 
 class BatchRequest(BaseModel):
-    entity_type: str  # "Company" | "Authority" | "Contract"
+    entity_type: str  # "Company" | "Authority"
     ids: list[str]
     triggered_by: str = "batch"
     exclude_rule_prefix: str | None = None  # e.g. "gds_" for fast bulk scans
-    # Per-request override for the gmr-linguistics translation backend
-    # (e.g. "mistral", "nllb-local"). `None` → the consolidator pod's
-    # configured default. Useful for side-by-side quality/speed comparisons
-    # without redeploying the service.
-    translation_backend: str | None = None
-    # Splits the sweep into two orthogonal jobs:
-    #   "match_only"  — dedup rules only, skip translation enrichment.
-    #   "enrich_only" — translation backfill only, skip matching.
-    #   "all"         — both, default (existing behaviour).
-    mode: Literal["all", "match_only", "enrich_only"] = "all"
+    #   "match_only"  — dedup rules only, skip the per-entity name embedding.
+    #   "all"         — both, default.
+    mode: Literal["all", "match_only"] = "all"
 
 
 @router.post("/consolidate/company/{gmr_id}")
@@ -83,7 +76,6 @@ async def consolidate_batch(req: BatchRequest):
             entity_id=entity_id,
             triggered_by=req.triggered_by,
             exclude_rule_prefix=req.exclude_rule_prefix,
-            translation_backend=req.translation_backend,
             mode=req.mode,
         )
         run_ids.append(result.run_id)

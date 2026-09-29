@@ -28,7 +28,7 @@ def _decision(**overrides) -> Decision:
     }
     details.update(overrides.pop("details", {}))
     base = {
-        "rule_name": "translation_enrichment_authority",
+        "rule_name": "authority_name_embedding",
         "action": "enrich",
         "source_id": "AUTH-1",
         "target_id": "AUTH-1",
@@ -82,53 +82,20 @@ async def test_enrich_writes_encoder_and_dim_alongside_embedding():
     assert props["name_embedding_dim"] == 768
 
 
-async def test_enrich_translations_only_does_not_require_encoder_id():
-    """Translations without an embedding don't need an encoder id."""
+async def test_enrich_writes_no_translations_even_if_a_decision_carries_some():
+    """Translations are fontem-translator's (events); this executor writes
+    the matching features only."""
     driver, captured = _capturing_driver()
     d = _decision(details={
-        "translations": {"en": "Hello", "fr": "Bonjour"},
-        "source_lang": "de",
+        "translations": {"en": "Hello", "fr": "Bonjour"}, "source_lang": "de",
+        "embedding": [0.1] * 768, "embedding_encoder": "labse@1.0.0-836121a",
     })
     await actions._enrich(driver, "neo4j", decision=d)
-
     props = captured["params"]["props"]
-    assert props["name_en"] == "Hello"
-    assert props["name_fr"] == "Bonjour"
-    assert props["name_lang"] == "de"
-    assert "name_embedding" not in props
-    assert "name_embedding_encoder" not in props
+    assert set(props) == {"name_embedding", "name_embedding_encoder", "name_embedding_dim"}
 
 
-async def test_enrich_contract_field_writes_title_prefix():
-    """Contract rule sets field="title" — props use title_* keys."""
+async def test_nothing_to_embed_writes_nothing():
     driver, captured = _capturing_driver()
-    d = _decision(entity_type="Contract", details={
-        "field": "title",
-        "translations": {"en": "Winter service 2025ff"},
-        "source_lang": "de",
-    })
-    await actions._enrich(driver, "neo4j", decision=d)
-
-    props = captured["params"]["props"]
-    assert props["title_en"] == "Winter service 2025ff"
-    assert props["title_lang"] == "de"
-    assert "name_en" not in props
-
-
-async def test_enrich_records_what_the_translations_were_made_from():
-    driver, captured = _capturing_driver()
-    d = _decision(entity_type="Contract", details={
-        "field": "title", "translations": {"en": "Winter service"},
-        "translated_from": "Winterdienst",
-    })
-    await actions._enrich(driver, "neo4j", decision=d)
-    assert captured["params"]["props"]["title_translated_from"] == "Winterdienst"
-
-
-async def test_no_translations_means_no_translated_from():
-    driver, captured = _capturing_driver()
-    d = _decision(entity_type="Contract", details={
-        "field": "title", "translations": {}, "translated_from": "Winterdienst",
-    })
-    await actions._enrich(driver, "neo4j", decision=d)
-    assert "params" not in captured    # nothing to write, nothing written
+    await actions._enrich(driver, "neo4j", decision=_decision())
+    assert "params" not in captured

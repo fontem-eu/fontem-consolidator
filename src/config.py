@@ -47,20 +47,13 @@ class Settings(BaseSettings):
     decision_retention_days: int = 180
     gds_top_k: int = 5
 
-    # fontem-linguistics — translation + embedding service. Deployed as a
-    # singleton in the linguistics-service namespace; every environment
+    # fontem-linguistics — the name embeddings (translation is
+    # fontem-translator's). Deployed as a singleton in the
+    # linguistics-service namespace; every environment
     # (including prod) points at the same URL.
     linguistics_url: str = "http://fontem-linguistics.linguistics-service.svc.cluster.local:8080"
     linguistics_enabled: bool = True
     linguistics_timeout_s: float = 60.0
-    # Nebius (owner's choice, 2026-09-28): the Mistral key is revoked and
-    # Nebius serves the same OpenAI-compatible chat at a fraction of the price.
-    linguistics_translation_backend: str = "nebius"
-    # The live title rules translate only nodes worth at least this much;
-    # below, budgeted backfill runs decide (owner's cut-offs, 2026-09-28:
-    # 0.1% of titled canonical nodes with a value, rounded).
-    live_translation_min_contract_eur: float = 250_000_000.0
-    live_translation_min_grant_eur: float = 70_000_000.0
     # Default embedding backend MUST form a working pipeline with the
     # authority_name_embedding_idx vector index (768-d, migrations.py):
     # labse-local is 768-d, so enrichment writes vectors the index can
