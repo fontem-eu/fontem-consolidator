@@ -32,16 +32,15 @@ router = APIRouter()
 # new financials may shift the dedup signal even if the company
 # row itself didn't change.
 #
-# Sanctions and control events are intentionally absent: the
-# consolidator has no rules for SanctionedEntity today, and
+# Sanctions, contracts and control events are intentionally absent:
+# the consolidator has no rules for SanctionedEntity or Contract (the
+# contract rule only ever translated titles; fontem-translator does), and
 # Begin/End graph-replace markers carry no entity to consolidate.
 # The trigger is expected to filter those out before posting; if
 # one slips through we 200-noop instead of erroring.
 EVENT_DISPATCH: dict[str, tuple[str, str] | None] = {
     "UpsertCompany":   ("Company",   "gmr_id"),
     "DeleteCompany":   None,
-    "UpsertContract":  ("Contract",  "ted_notice_id"),
-    "DeleteContract":  None,
     "UpsertAuthority": ("Authority", "authority_id"),
     "DeleteAuthority": None,
     "UpsertFiling":    ("Company",   "gmr_id"),

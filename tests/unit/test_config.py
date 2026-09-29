@@ -91,31 +91,11 @@ def test_module_singleton_uses_the_same_defaults():
     assert settings.linguistics_embedding_backend in EMBEDDING_BACKEND_DIMS
 
 
-def test_translation_default_is_nebius():
-    """Nebius (owner's choice, 2026-09-28): one chat call translates all
-    23 target languages under linguistics' own daily cap, at a fraction of
-    Mistral's price, and the Mistral key is revoked. nllb-local stays
-    reachable via CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND for
-    offline use (a 23-target request takes minutes on CPU)."""
-    assert Settings().linguistics_translation_backend == "nebius"
-
-
-def test_the_live_rules_translate_only_above_the_owners_cut_offs():
-    assert Settings().live_translation_min_contract_eur == 250_000_000
-    assert Settings().live_translation_min_grant_eur == 70_000_000
-
-
-def test_linguistics_client_translates_with_the_settings_default():
-    assert LinguisticsClient(base_url="http://x").translation_backend == (
-        Settings().linguistics_translation_backend
-    )
-
-
-def test_nllb_translation_stays_available_via_env_override(monkeypatch):
-    monkeypatch.setenv(
-        "CONSOLIDATOR_LINGUISTICS_TRANSLATION_BACKEND", "nllb-local",
-    )
-    assert Settings().linguistics_translation_backend == "nllb-local"
+def test_the_consolidator_carries_no_translation_settings():
+    """Translation is fontem-translator's job; the consolidator only asks
+    linguistics for the name vectors its similarity rule compares."""
+    assert not [f for f in Settings().model_dump() if "translat" in f]
+    assert not hasattr(LinguisticsClient(base_url="http://x"), "translation_backend")
 
 
 def test_company_name_fulltext_index_present():

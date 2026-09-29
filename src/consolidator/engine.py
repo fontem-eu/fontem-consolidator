@@ -13,11 +13,9 @@ from src.consolidator import actions, audit, entities, eventlog
 from src.consolidator.rules.base import Decision
 from src.consolidator.rules.registry import list_rules
 
-# `match_only` skips rules with action="enrich" — useful for the dedup
-# sweep where translation enrichment dominates wall-time but is
-# orthogonal to matching. `enrich_only` is the inverse, for the
-# translation-backfill sweep.
-ConsolidateMode = Literal["all", "match_only", "enrich_only"]
+# `match_only` skips rules with action="enrich" (the per-entity name
+# embedding): the dedup sweep does not wait on linguistics round trips.
+ConsolidateMode = Literal["all", "match_only"]
 
 RULE_FIRES = Counter(
     "gmr_consolidator_rule_fires_total",
@@ -105,7 +103,6 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
     entity_id: str,
     triggered_by: str = "api",
     exclude_rule_prefix: str | None = None,
-    translation_backend: str | None = None,
     mode: ConsolidateMode = "all",
 ) -> ConsolidationResult:
     """Run the rule pipeline for an entity.
@@ -116,18 +113,11 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
     exclude_rule_prefix: optional rule-name prefix to skip (e.g. "gds_" for
     fast bulk scans — GDS rules reproject the whole subgraph per call).
 
-    translation_backend: optional per-request override for the gmr-linguistics
-    translation backend (e.g. "mistral", "nllb-local"). Threaded into each
-    enrichment rule's candidate context; `None` falls back to the service
-    default configured on the consolidator pod.
-
     mode: filters which rules run by their action.
       "all" (default) — every applicable rule runs.
-      "match_only"    — skip rules with action="enrich" (e.g. translation
-                        enrichment), keep matching/dedup rules. Used by the
+      "match_only"    — skip rules with action="enrich" (the name
+                        embedding), keep matching/dedup rules. Used by the
                         dedup sweep so it isn't blocked on linguistics RTTs.
-      "enrich_only"   — only run rules with action="enrich". Used by the
-                        translation-backfill sweep.
     """
 
     entity = await entities.load(driver, database, entity_type=entity_type, entity_id=entity_id)
@@ -161,8 +151,6 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             continue
         if mode == "match_only" and rule.action == "enrich":
             continue
-        if mode == "enrich_only" and rule.action != "enrich":
-            continue
         if entity_type not in rule.entity_types:
             continue
         try:
@@ -178,15 +166,11 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
         if not candidates:
             continue
 
-        if translation_backend and rule.action == "enrich":
-            for c in candidates:
-                c.context["translation_backend_override"] = translation_backend
-
         rules_fired += 1
         for candidate in candidates:
             is_self = candidate.entity.id == entity.id
             # Per-entity enrichment rules legitimately target the entity
-            # itself (e.g. translation enrichment writes properties back).
+            # itself (the name embedding is written back to it).
             # Other rules must never self-match.
             if is_self and rule.action != "enrich":
                 continue
@@ -275,8 +259,7 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             if outcome in ("auto_assert", "auto_link"):
                 handled_targets.add(candidate.entity.id)
             # Enrichment never participates in the short-circuit: it's
-            # orthogonal to matching — a merged pair can still want
-            # translations filled in.
+            # orthogonal to matching.
 
     summary_outcome = await _finish_run(
         driver, database, run_id=run_id,

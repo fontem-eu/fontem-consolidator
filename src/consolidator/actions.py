@@ -499,62 +499,36 @@ async def _enrich(
     *,
     decision: Decision,
 ) -> None:
-    """Write translation + (optional) embedding properties back to the node.
+    """Write an entity's own computed matching features back to it: the
+    ``{field}_embedding`` vector with its encoder and dimension.
 
-    Rules pick the field prefix via ``details["field"]`` — "name" for
-    Authority, "title" for Contract — and the executor writes
-    ``{field}_<lang>``, ``{field}_embedding``, ``{field}_embedding_encoder``,
-    ``{field}_embedding_dim``, ``{field}_lang``. Defaults to "name" so
-    older decisions without the field key stay valid.
-
-    When an embedding is present, an encoder identity MUST also be
-    present. Un-versioned embeddings would be un-comparable silently
-    down the line — we refuse to write them rather than poison the cache.
+    The encoder identity is required: vectors from different encoders are
+    not comparable, and an un-versioned one would be compared silently.
+    Translations are not written here any more; fontem-translator publishes
+    them as events.
     """
     label = decision.entity_type
     id_key = _id_key(label)
     field = decision.details.get("field") or "name"
-    translations = decision.details.get("translations") or {}
     embedding = decision.details.get("embedding")
-    embedding_encoder = decision.details.get("embedding_encoder")
-    source_lang = decision.details.get("source_lang")
-    # The text the translations were made from, so a later change to it is
-    # seen as one rather than left under stale translations.
-    translated_from = decision.details.get("translated_from")
-
-    if embedding is not None and not embedding_encoder:
+    encoder = decision.details.get("embedding_encoder")
+    if embedding is None:
+        return
+    if not encoder:
         raise ValueError(
             "_enrich: embedding present but embedding_encoder missing; "
             "refusing to write an un-versioned vector",
         )
-
-    props: dict = {}
-    for lang, text in translations.items():
-        if isinstance(lang, str) and isinstance(text, str) and lang.isalpha():
-            props[f"{field}_{lang.lower()}"] = text
-    if embedding is not None:
-        props[f"{field}_embedding"] = embedding
-        props[f"{field}_embedding_encoder"] = embedding_encoder
-        props[f"{field}_embedding_dim"] = len(embedding)
-    if source_lang:
-        props[f"{field}_lang"] = source_lang
-    if translations and translated_from:
-        props[f"{field}_translated_from"] = translated_from
-    if not props:
-        return
-
     async with driver.session(database=database) as session:
         await session.run(
             f"""
             MATCH (n:{label} {{{id_key}: $id}})
-            SET n += $props,
-                n.multilingual_updated_at = $now
+            SET n += $props
             """,
             id=decision.source_id,
-            props=props,
-            # Native datetime → stored as Neo4j DateTime (not ISO string), so
-            # `WHERE a.multilingual_updated_at > datetime(...)` filters work.
-            now=datetime.now(timezone.utc),
+            props={f"{field}_embedding": embedding,
+                   f"{field}_embedding_encoder": encoder,
+                   f"{field}_embedding_dim": len(embedding)},
         )
 
 

@@ -51,11 +51,9 @@ logger = logging.getLogger(__name__)
 # consolidate.
 INPUT_TYPES: frozenset[str] = frozenset({
     "UpsertCompany",
-    "UpsertContract",
     "UpsertAuthority",
     "UpsertFiling",
     "DeleteCompany",
-    "DeleteContract",
     "DeleteAuthority",
     "DeleteFiling",
 })

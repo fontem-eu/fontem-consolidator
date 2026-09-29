@@ -29,8 +29,8 @@ the first one picked up again rather than skipped for a rotation.
 
 Match-only, no GDS
 ------------------
-``mode="match_only"`` skips the enrichment/translation rules (they need
-the linguistics/Mistral backend and are orthogonal to dedup), and
+``mode="match_only"`` skips the enrichment rule (the name embedding waits
+on linguistics and is orthogonal to dedup), and
 ``exclude_rule_prefix="gds_"`` skips the GDS rules (they reproject the
 whole subgraph per call — far too expensive to run per-entity in a
 tight loop; they run as separate batch jobs).

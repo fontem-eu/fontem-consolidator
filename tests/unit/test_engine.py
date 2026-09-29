@@ -319,14 +319,6 @@ async def test_engine_match_only_skips_enrich_rules():
 
 
 @pytest.mark.asyncio
-async def test_engine_enrich_only_skips_match_rules():
-    """mode='enrich_only' runs translation/enrichment rules only.
-    Used by the translation-backfill sweep."""
-    fired = await _run_with_mode([_FakeRule(), _EnrichRule()], "enrich_only")
-    assert fired == ["fake_enrich"]
-
-
-@pytest.mark.asyncio
 async def test_engine_default_mode_runs_everything():
     """mode='all' is the default and preserves the existing behaviour of
     running every applicable rule."""

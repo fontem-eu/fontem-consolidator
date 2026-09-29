@@ -200,3 +200,25 @@ def test_concurrent_dispatch_threadpool(trigger):
     assert len(seen_threads) >= 2, (
         f"expected concurrent dispatch, all ran on {seen_threads}"
     )
+
+
+def test_contract_events_are_not_dispatched(trigger):
+    """The only contract rule ever translated titles; fontem-translator does
+    that from the event log. Every contract event reaching the consolidator
+    cost a dispatch and a run for nothing — millions during a TED rescan."""
+    batch = [
+        _envelope(30, "UpsertContract", payload={"ted_notice_id": "344226-2021"}),
+        _envelope(31, "DeleteContract", payload={"ted_notice_id": "344226-2021"}),
+    ]
+    posted: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        posted.append(str(req.url))
+        return httpx.Response(200)
+
+    with patch(
+        "src.consolidator.trigger.consumer.httpx.Client",
+        _client_factory(handler),
+    ):
+        trigger.handle(batch)
+    assert not posted
