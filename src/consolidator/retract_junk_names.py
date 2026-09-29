@@ -18,7 +18,7 @@ POST /same-as/{a}/{b}/correct does for one pair:
   2. Only once the batch has landed is the Neo4j side recorded, through
      the endpoint's own code path (actions.record_correction): the
      settled :SAME_AS_CANDIDATE goes, :NOT_SAME_AS is MERGEd with
-     reviewer / reason / retracted_method, a DecisionLog row is written.
+     reviewer / reason / retracted_method, a decision-log row is written.
      Emitting first means a batch the event store dropped is retried on
      the next run instead of looking settled forever -- the engine's
      flush marks pairs the same way, after the events land.
@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--pattern-file", help="one regex per line, replacing the defaults")
     parser.add_argument("--report", help="write the JSON report here (default: stdout)")
     parser.add_argument("--reviewer", default=DEFAULT_REVIEWER,
-                        help="recorded on :NOT_SAME_AS and DecisionLog")
+                        help="recorded on :NOT_SAME_AS and in the decision log")
     parser.add_argument("--country", default=DEFAULT_COUNTRY,
                         help="ISO-3; scan only companies of this country")
     parser.add_argument("--any-country", action="store_true",

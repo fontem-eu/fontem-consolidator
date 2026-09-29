@@ -42,12 +42,11 @@ deterministic identifier matches — see ``rules/base.py``.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from neo4j import AsyncDriver
 
 from src.config import settings
-from src.consolidator import eventlog
+from src.consolidator import audit, eventlog
 from src.consolidator.rules.base import Decision
 
 _ID_KEY_BY_LABEL: dict[str, str] = {
@@ -120,7 +119,10 @@ async def execute(
     outside a retryable request should do.
 
     Returns the decision_type actually applied (may differ from decision.action
-    when auto_merge is disabled or a conflict is detected).
+    when auto_merge is disabled or a conflict is detected). "reflag" is a
+    rule re-confirming a proposal it had already made, unchanged — what the
+    sweeper finds on most pending pairs every rotation. It is counted, not
+    recorded (audit.RECORDED_OUTCOMES).
     """
     if decision.action == "merge":
         return await _execute_assert(
@@ -134,18 +136,25 @@ async def execute(
 
     if decision.action == "flag":
         conflict = bool(decision.details.get("conflict", False))
-        proposed = await _propose_candidate(
+        change = await _propose_candidate(
             driver, database, decision=decision, conflict=conflict
         )
-        if not proposed:
-            return "noop"
-        return "conflict" if conflict else "flag"
+        return _proposal_outcome(change, conflict=conflict)
 
     if decision.action == "enrich":
         await _enrich(driver, database, decision=decision)
         return "enrich"
 
     return "noop"
+
+
+def _proposal_outcome(change: str | None, *, conflict: bool) -> str:
+    """The decision type of a proposal, from what _propose_candidate did."""
+    if change is None:
+        return "noop"
+    if change == "unchanged":
+        return "reflag"
+    return "conflict" if conflict else "flag"
 
 
 # Same six-kwarg dispatch contract as execute(); see the note there.
@@ -179,8 +188,8 @@ async def _execute_assert(
     if not settings.auto_merge_enabled and not forced:
         # Not allowed to assert on its own — this becomes a proposal, and
         # a proposal publishes nothing.
-        proposed = await _propose_candidate(driver, database, decision=decision)
-        return "flag" if proposed else "noop"
+        change = await _propose_candidate(driver, database, decision=decision)
+        return _proposal_outcome(change, conflict=False)
 
     # Already settled? Then say nothing. The rules are deterministic and
     # nothing is deleted any more, so exact_lei_match finds the same pair
@@ -352,15 +361,18 @@ async def _propose_candidate(
     *,
     decision: Decision,
     conflict: bool = False,
-) -> bool:  # pylint: disable=too-many-locals
+) -> str | None:  # pylint: disable=too-many-locals
     """Record a proposal on the :SAME_AS_CANDIDATE edge for review.
 
     This asserts nothing and emits nothing. It says a rule thinks the
     pair might be the same and here is the evidence.
 
-    Returns False when the pair was already settled (corrected,
-    asserted, or declined) so the caller records a noop rather than
-    claiming a candidate was queued.
+    Returns None when the pair was already settled (corrected, asserted,
+    or declined) so the caller records a noop rather than claiming a
+    candidate was queued. Otherwise what the proposal did: "new" (this
+    rule had not proposed the pair), "changed" (its confidence moved, or
+    it newly reports a conflict) or "unchanged" (only the detection date
+    was refreshed).
 
     Schema (Neo4j relationships only allow primitives + arrays of
     primitives, so the per-rule detection list is stored as three
@@ -421,10 +433,15 @@ async def _propose_candidate(
             // created a second, reverse edge instead -- 10,687 pairs in
             // prod on 2026-09-18, each a duplicate in the review queue.
             MERGE (a)-[r:SAME_AS_CANDIDATE]-(b)
-            // Indices of existing entries to KEEP (those that aren't
-            // for the rule firing now — that one's about to be
-            // replaced/appended).
+            // What this rule had recorded before, to say whether the
+            // proposal changed. Indices of existing entries to KEEP
+            // (those that aren't for the rule firing now — that one's
+            // about to be replaced/appended).
             WITH r,
+              coalesce(r.conflict, false) AS was_conflict,
+              [i IN range(0, size(coalesce(r.detection_rules, [])) - 1)
+                 WHERE coalesce(r.detection_rules, [])[i] = $rule_name
+                 | r.detection_confidences[i]] AS mine_before,
               [i IN range(0, size(coalesce(r.detection_rules, [])) - 1)
                  WHERE coalesce(r.detection_rules, [])[i] <> $rule_name
               ] AS keep
@@ -445,7 +462,7 @@ async def _propose_candidate(
             // Recompute summary fields from the full (post-update)
             // confidence list. The reduce() walks parallel arrays to
             // find the max-confidence index.
-            WITH r,
+            WITH r, was_conflict, mine_before,
               reduce(best = {{idx: 0, c: -1.0}},
                      i IN range(0, size(r.detection_confidences) - 1) |
                 CASE WHEN r.detection_confidences[i] > best.c
@@ -455,7 +472,12 @@ async def _propose_candidate(
             SET r.confidence  = r.detection_confidences[top_i],
                 r.method      = r.detection_rules[top_i],
                 r.detected_at = r.detection_dates[top_i]
-            RETURN 1 AS proposed
+            RETURN CASE
+              WHEN size(mine_before) = 0 THEN 'new'
+              WHEN mine_before[0] <> $confidence
+                   OR ($conflict AND NOT was_conflict) THEN 'changed'
+              ELSE 'unchanged'
+            END AS change
             """,
             source_id=decision.source_id,
             target_id=decision.target_id,
@@ -467,7 +489,8 @@ async def _propose_candidate(
             conflict_left=_scalar(details.get("left")),
             conflict_right=_scalar(details.get("right")),
         )
-        return await result.single() is not None
+        record = await result.single()
+        return record["change"] if record is not None else None
 
 
 async def _enrich(
@@ -570,8 +593,9 @@ async def record_correction(session, c: Correction) -> None:
     the rule that got it wrong is deterministic and would otherwise reach
     the same conclusion on the next sweep. Idempotent: MERGE on the edge,
     and a second call only refreshes its provenance -- but it does write
-    a second DecisionLog row, so callers that re-run skip pairs already
+    a second decision-log row, so callers that re-run skip pairs already
     carrying the edge (retract_junk_names does, in its read query).
+    The decision is logged in Postgres (audit.record_review), not the graph.
     """
     id_key = _id_key(c.label)
     await session.run(
@@ -591,26 +615,12 @@ async def record_correction(session, c: Correction) -> None:
             "method": c.retracted_method,
         },
     )
-    await session.run(
-        """
-        CREATE (dl:DecisionLog {
-          decision_id: $decision_id,
-          decided_at: $decided_at,
-          decision_type: 'manual_correction',
-          rule_name: $rule_name,
-          source_id: $source_id,
-          target_id: $target_id,
-          entity_type: $entity_type,
-          reviewer: $reviewer,
-          review_note: $note
-        })
-        """,
-        decision_id=str(uuid4()),
-        decided_at=_now(),
+    await audit.record_review(
+        decision_type="manual_correction",
         rule_name=c.retracted_method,
+        entity_type=c.label,
         source_id=c.from_id,
         target_id=c.to_id,
-        entity_type=c.label,
         reviewer=c.reviewer,
-        note=c.reason,
+        review_note=c.reason,
     )

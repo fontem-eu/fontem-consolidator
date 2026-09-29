@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # See rules/company/fuzzy.py for why a wordlist alone is not enough.
     fuzzy_shared_prefix_guard_chars: int = 8
     gds_similarity_threshold: float = 0.7
+    # Rule decisions (consolidation.decision_log, origin='rule') older than
+    # this are pruned by the sweeper; human decisions are kept. The
+    # :SAME_AS_CANDIDATE edge itself carries every rule's latest detection.
+    decision_retention_days: int = 180
     gds_top_k: int = 5
 
     # fontem-linguistics — translation + embedding service. Deployed as a

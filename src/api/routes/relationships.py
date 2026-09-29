@@ -22,12 +22,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.config import settings
+from src.consolidator import audit
 from src.consolidator.neo4j.client import get_driver
 
 router = APIRouter()
@@ -132,7 +132,7 @@ class DecideRelationshipBody(BaseModel):
 
     `accept` marks the edge `reviewed=true` and records the reviewer
     on the edge; the relationship stands. `reject` deletes the edge.
-    Either way a :DecisionLog entry is created so the audit trail
+    Either way a decision-log row is written (Postgres) so the audit trail
     survives the edge being removed."""
 
     decision: Literal["accept", "reject"]
@@ -192,31 +192,15 @@ async def decide_relationship(edge_id: str, body: DecideRelationshipBody):
             decision_type = "manual_accept_relationship"
 
         # Audit trail — survives the edge being deleted on reject.
-        await session.run(
-            """
-            CREATE (dl:DecisionLog {
-              decision_id: $decision_id,
-              decided_at: $decided_at,
-              decision_type: $decision_type,
-              rule_name: coalesce($method, $rel_type),
-              confidence: coalesce($confidence, 0.0),
-              source_id: $source_id,
-              target_id: $target_id,
-              entity_type: $rel_type,
-              reviewer: $reviewer,
-              review_note: $note
-            })
-            """,
-            decision_id=str(uuid4()),
-            decided_at=now,
+        await audit.record_review(
             decision_type=decision_type,
-            method=rec["method"],
-            confidence=rec["confidence"],
+            rule_name=rec["method"] or rec["rel_type"],
+            entity_type=rec["rel_type"],
             source_id=source_id,
             target_id=target_id,
-            rel_type=rec["rel_type"],
             reviewer=body.reviewer,
-            note=body.note,
+            review_note=body.note,
+            confidence=rec["confidence"] if rec["confidence"] is not None else 0.0,
         )
 
     return {

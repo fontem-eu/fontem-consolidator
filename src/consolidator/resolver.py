@@ -19,7 +19,7 @@ once normalised, no NULL-bypass.
 Callers receive `ResolveResult.match` (one row, ready to act on) OR
 `ResolveResult.candidates` (a review list) OR `hint == "no_match"`.
 The same plumbing the consolidator uses to record decisions
-(:ConsolidationRun, audit) is intentionally NOT used here — this is
+(the decision log, audit.py) is intentionally NOT used here — this is
 read-only lookup, not graph mutation. ETLs decide whether to write.
 """
 from __future__ import annotations

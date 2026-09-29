@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Literal
+from uuid import uuid4
 
 from loguru import logger
 from neo4j import AsyncDriver
@@ -39,16 +40,15 @@ class ConsolidationResult:
 # Splitting it makes the control flow harder to follow than keeping
 # it as one linear function; the kwargs map 1:1 to the public API
 # surface (consolidator dispatch route + trigger consumer).
-async def _finish_run(  # pylint: disable=too-many-arguments
+async def _finish_run(
     driver: AsyncDriver,
     database: str,
     *,
     run_id: str,
-    rules_fired: int,
     decisions_recorded: list[dict],
     pending_events: list[dict],
 ) -> str:
-    """Close out a run: flush its events, then record the audit row.
+    """Close out a run: flush its events and summarise its outcome.
 
     The flush happens here — before the run returns — so a failure is
     still inside the HTTP request the trigger is waiting on. That is what
@@ -57,16 +57,7 @@ async def _finish_run(  # pylint: disable=too-many-arguments
     redelivered and redone.
     """
     await _flush_pending_events(driver, database, run_id, pending_events)
-    summary_outcome = _summarize(decisions_recorded)
-    await audit.end_run(
-        driver,
-        database,
-        run_id=run_id,
-        rules_fired=rules_fired,
-        decisions=len(decisions_recorded),
-        outcome=summary_outcome,
-    )
-    return summary_outcome
+    return _summarize(decisions_recorded)
 
 
 async def _flush_pending_events(
@@ -117,7 +108,10 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
     translation_backend: str | None = None,
     mode: ConsolidateMode = "all",
 ) -> ConsolidationResult:
-    """Run the rule pipeline for an entity. Always records a :ConsolidationRun with outcomes.
+    """Run the rule pipeline for an entity.
+
+    Decisions that changed something are recorded in Postgres (see
+    audit.py) under a run id; nothing about the run is written to the graph.
 
     exclude_rule_prefix: optional rule-name prefix to skip (e.g. "gds_" for
     fast bulk scans — GDS rules reproject the whole subgraph per call).
@@ -137,24 +131,14 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
     """
 
     entity = await entities.load(driver, database, entity_type=entity_type, entity_id=entity_id)
-
-    # Even if the entity is gone we still record a run so history is complete.
-    placeholder = entity or entities.Entity(
-        entity_type=entity_type, id=entity_id, properties={}
-    )  # type: ignore[attr-defined]
-
-    run_id = await audit.start_run(
-        driver, database, entity=placeholder, triggered_by=triggered_by
-    )
+    run_id = str(uuid4())
 
     if entity is None:
         logger.warning(
-            "consolidator: entity not found {entity_type}={entity_id}",
+            "consolidator: entity not found {entity_type}={entity_id} ({by})",
             entity_type=entity_type,
             entity_id=entity_id,
-        )
-        await audit.end_run(
-            driver, database, run_id=run_id, rules_fired=0, decisions=0, outcome="not_found"
+            by=triggered_by,
         )
         return ConsolidationResult(
             run_id=run_id, entity_type=entity_type, entity_id=entity_id, decisions=[], rules_fired=0
@@ -263,8 +247,6 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
                 driver, database, decision=decision, collect=pending_events,
             )
             await audit.record_decision(
-                driver,
-                database,
                 run_id=run_id,
                 decision=decision,
                 decision_type=outcome,
@@ -297,7 +279,7 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
             # translations filled in.
 
     summary_outcome = await _finish_run(
-        driver, database, run_id=run_id, rules_fired=rules_fired,
+        driver, database, run_id=run_id,
         decisions_recorded=decisions_recorded, pending_events=pending_events,
     )
 
@@ -324,7 +306,7 @@ async def consolidate(  # pylint: disable=too-many-arguments,too-many-locals,too
 
 # Each branch maps one outcome to one summary label — flattening into
 # a dict would just hide the priority ordering (merge > link > conflict
-# > flag > enrich > noop) that this if-ladder makes explicit.
+# > flag/reflag > enrich > noop) that this if-ladder makes explicit.
 def _summarize(decisions: list[dict]) -> str:  # pylint: disable=too-many-return-statements
     if not decisions:
         return "no_match"
@@ -334,7 +316,7 @@ def _summarize(decisions: list[dict]) -> str:  # pylint: disable=too-many-return
         return "linked"
     if any(d["outcome"] == "conflict" for d in decisions):
         return "conflict_flagged"
-    if any(d["outcome"] == "flag" for d in decisions):
+    if any(d["outcome"] in ("flag", "reflag") for d in decisions):
         return "flagged"
     if any(d["outcome"] == "enrich" for d in decisions):
         return "enriched"

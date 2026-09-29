@@ -48,10 +48,8 @@ async def test_exact_lei_auto_merges(driver, monkeypatch):
     assert remaining == 1
     merge_events = await _count(driver, "MATCH (:MergeEvent) RETURN count(*)")
     assert merge_events >= 1
-    auto_merges = await _count(
-        driver, "MATCH (:DecisionLog {decision_type:'auto_merge'}) RETURN count(*)"
-    )
-    assert auto_merges >= 1
+    # The decision is recorded in Postgres (audit.py), never as a graph node.
+    assert await _count(driver, "MATCH (d:DecisionLog) RETURN count(d)") == 0
 
 
 @pytest.mark.asyncio
@@ -73,10 +71,8 @@ async def test_exact_lei_force_auto_merges_even_when_gate_disabled(driver, monke
 
     remaining = await _count(driver, "MATCH (c:Company) RETURN count(c)")
     assert remaining == 1  # merged despite gate=False
-    auto_merges = await _count(
-        driver, "MATCH (:DecisionLog {decision_type:'auto_merge'}) RETURN count(*)"
-    )
-    assert auto_merges >= 1
+    # The decision is recorded in Postgres (audit.py), never as a graph node.
+    assert await _count(driver, "MATCH (d:DecisionLog) RETURN count(d)") == 0
 
 
 @pytest.mark.asyncio
@@ -123,11 +119,7 @@ async def test_conflicting_identifiers_refuse_merge(driver, monkeypatch):
         "WHERE r.conflict = true RETURN count(r)",
     )
     assert conflict == 1
-    conflict_dl = await _count(
-        driver,
-        "MATCH (:DecisionLog {decision_type:'conflict'}) RETURN count(*)",
-    )
-    assert conflict_dl >= 1
+    assert await _count(driver, "MATCH (d:DecisionLog) RETURN count(d)") == 0
 
 
 @pytest.mark.asyncio
@@ -426,9 +418,10 @@ async def test_conflict_flag_survives_subsequent_fuzzy_match(driver, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_consolidation_run_and_decisionlog_always_written(driver, monkeypatch):
-    """Even for a no-match entity, a :ConsolidationRun exists. And for actual
-    matches, a :DecisionLog chains off the run via :RuleApplication."""
+async def test_no_audit_node_is_written_to_the_graph(driver, monkeypatch):
+    """Consolidating writes no :ConsolidationRun, :RuleApplication or
+    :DecisionLog: decisions are recorded in Postgres (audit.py). They were
+    94% of prod's nodes when they lived in the graph."""
     monkeypatch.setattr(settings, "auto_merge_enabled", True)
     await _create_company(driver, gmr_id="ALONE", name="Alone Corp", country="ES")
 
@@ -436,7 +429,10 @@ async def test_consolidation_run_and_decisionlog_always_written(driver, monkeypa
         driver, "neo4j", entity_type="Company", entity_id="ALONE", triggered_by="test"
     )
 
-    runs = await _count(
-        driver, "MATCH (r:ConsolidationRun {run_id: $id}) RETURN count(r)", id=result.run_id
+    assert result.run_id
+    audit_nodes = await _count(
+        driver,
+        "MATCH (n) WHERE n:ConsolidationRun OR n:RuleApplication OR n:DecisionLog "
+        "RETURN count(n)",
     )
-    assert runs == 1
+    assert audit_nodes == 0

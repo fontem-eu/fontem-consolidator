@@ -1,13 +1,12 @@
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from src.api.lang import apply_translation, safe_lang
 from src.config import settings
-from src.consolidator import actions, eventlog
+from src.consolidator import actions, audit, eventlog
 from src.consolidator.neo4j.client import get_driver
 
 router = APIRouter()
@@ -292,32 +291,16 @@ async def decide(from_id: str, to_id: str, body: DecideBody):
                 domain=label.lower(),
             )
 
-        # Log the manual decision
-        await session.run(
-            """
-            CREATE (dl:DecisionLog {
-              decision_id: $decision_id,
-              decided_at: $decided_at,
-              decision_type: $decision_type,
-              rule_name: $rule_name,
-              confidence: $confidence,
-              source_id: $source_id,
-              target_id: $target_id,
-              entity_type: $entity_type,
-              reviewer: $reviewer,
-              review_note: $note
-            })
-            """,
-            decision_id=str(uuid4()),
-            decided_at=_now(),
+        # Log the manual decision (Postgres; see audit.py)
+        await audit.record_review(
             decision_type=decision_type,
             rule_name=rule_name,
-            confidence=confidence,
+            entity_type=label,
             source_id=from_id,
             target_id=to_id,
-            entity_type=label,
             reviewer=body.reviewer,
-            note=body.note,
+            review_note=body.note,
+            confidence=confidence,
         )
 
     return {

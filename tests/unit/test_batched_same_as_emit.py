@@ -260,8 +260,6 @@ def test_engine_reaches_the_flush_with_the_store_it_must_mark_in(monkeypatch):
     monkeypatch.setattr(engine, "_flush_pending_events", _spy)
     monkeypatch.setattr(engine, "list_rules", lambda *a, **k: [])
     monkeypatch.setattr(engine.entities, "load", _load)
-    monkeypatch.setattr(engine.audit, "start_run", _noop)
-    monkeypatch.setattr(engine.audit, "end_run", _noop)
 
     sentinel = object()
     asyncio.run(engine.consolidate(

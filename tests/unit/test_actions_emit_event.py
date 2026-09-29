@@ -82,7 +82,7 @@ async def test_settled_pair_reports_noop():
     """Already corrected, asserted or declined — no candidate edge was
     written, so the audit must not claim one was queued."""
     driver = MagicMock()
-    with patch.object(actions, "_propose_candidate", new=AsyncMock(return_value=False)), \
+    with patch.object(actions, "_propose_candidate", new=AsyncMock(return_value=None)), \
          patch.object(actions.eventlog, "emit_assert_same_as", new=AsyncMock()) as emit:
         outcome = await actions.execute(
             driver, "neo4j",
@@ -196,7 +196,7 @@ async def test_settled_check_is_skipped_when_not_allowed_to_assert():
     wasted on every flag in the sweep."""
     driver = MagicMock()
     with patch.object(actions, "_propose_candidate",
-                      new=AsyncMock(return_value=True)), \
+                      new=AsyncMock(return_value="new")), \
          patch.object(actions, "_is_settled", new=AsyncMock()) as settled, \
          patch.object(actions.settings, "auto_merge_enabled", False):
         outcome = await actions.execute(
