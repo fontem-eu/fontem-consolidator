@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir /tmp/gmr-event-schemas /tmp/gmr-events
 RUN pip uninstall -y pip
 
 # ── runtime: distroless; combined CA bundle so internal HTTPS is trusted ──────
-FROM cgr.void42.internal/chainguard/python:latest@sha256:275d5493a184cf00a421871b1197de8eeb30c91280a8a18c222d61d9fb2c7919
+FROM cgr.void42.internal/chainguard/python:latest@sha256:1961420e5f93bd056d4b0b40eca12cdf01b3ed09177aa4d6ec71fab38cbf158f
 WORKDIR /app
 COPY --from=build /venv /venv
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
