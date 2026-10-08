@@ -3,7 +3,7 @@ fastapi==0.141.1
 # would otherwise allow releases with known CVEs. 0.52.1 sat here long
 # after six HIGH advisories were fixed in later releases; 1.6.0 is what
 # fontem-api runs with the same fastapi.
-starlette==1.6.0
+starlette==1.7.0
 uvicorn[standard]==0.53.0
 neo4j==6.3.1
 loguru==0.7.3
