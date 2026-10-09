@@ -1,5 +1,5 @@
 # ── build: venv + void42 CA folded into the trust bundle ─────────────────────
-FROM cgr.void42.internal/chainguard/python:latest-dev@sha256:894aed3297d91283e1fc4c542f5374a4b5f3726134fda7c94eaa539342be1e05 AS build
+FROM cgr.void42.internal/chainguard/python:latest-dev@sha256:4a9201167f294fa8d32801010a263a45aa18535359e6fc304e6bffc0b3dd5352 AS build
 USER root
 ENV PIP_INDEX_URL=https://nexus.void42.internal/repository/pypi-proxy/simple/ \
     PIP_TRUSTED_HOST=nexus.void42.internal
