@@ -4,6 +4,10 @@ fastapi==0.141.1
 # after six HIGH advisories were fixed in later releases; 1.6.0 is what
 # fontem-api runs with the same fastapi.
 starlette==1.7.0
+# Explicit anyio pin for the same reason: starlette and httpx only bound it
+# from below, and 4.9.0 (resolved under the exact pins above) carries
+# PYSEC-2026-4025 (TLS host name spoofing), fixed in 4.14.2.
+anyio==4.15.1
 uvicorn[standard]==0.54.0
 neo4j==6.3.1
 loguru==0.7.3
