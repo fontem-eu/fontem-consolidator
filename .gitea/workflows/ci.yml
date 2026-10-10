@@ -34,6 +34,20 @@ jobs:
         # disables, pytest testpaths) lives in pyproject.toml.
         run: python3 -m pylint src/consolidator tests
 
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: void42/ci-actions
+          path: .ci-actions
+          token: ${{ secrets.CI_READ_TOKEN }}
+      - name: OSV-Scanner lockfile gate
+        uses: ./.ci-actions/actions/osv-scan
+      - name: Secret scan (gitleaks)
+        uses: ./.ci-actions/actions/secret-scan
+
   analyze:
     needs: test
     runs-on: python
@@ -82,7 +96,7 @@ jobs:
           sonar-token: ${{ secrets.SONAR_TOKEN }}
 
   build-deploy:
-    needs: test
+    needs: [test, security]
     if: github.ref == 'refs/heads/main'
     runs-on: python
     steps:
